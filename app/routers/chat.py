@@ -8,8 +8,12 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.post("", response_model=ChatResponse)
 async def chat(payload: ChatRequest) -> ChatResponse:
-    reply = await dummy_llm_service.generate_reply(
+    reply, tool_calls = await dummy_llm_service.execute_and_interpret(
         message=payload.message,
         history=payload.history,
     )
-    return ChatResponse(reply=reply, model=dummy_llm_service.model_name)
+    return ChatResponse(
+        reply=reply,
+        model=dummy_llm_service.model_name,
+        tool_calls=tool_calls,
+    )

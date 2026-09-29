@@ -1,38 +1,187 @@
-from app.models.chat import ChatMessage
+import json
+from typing import Any
+from app.models.chat import ChatMessage, ToolCallRecord
+from app.services.llm_client import MockLLMClient, mock_llm_client
+from app.services.sld_service import sld_service
+
+# Tool descriptions provided to the LLM
+SLD_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_rfqs",
+            "description": "Fetch structured product RFQs from SLD with optional filters for status, currency, issuer, product type, or specific RFQ ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rfq_id": {"type": "string", "description": "Specific RFQ ID or ISIN (e.g. 'RFQ-101')"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["open", "quoted", "traded", "expired", "rejected"],
+                        "description": "Lifecycle status of the RFQ",
+                    },
+                    "currency": {"type": "string", "description": "Currency code (e.g. CHF, USD, EUR)"},
+                    "issuer": {"type": "string", "description": "Quoted or traded issuer bank (e.g. ZKB, UBS, Vontobel, BNP Paribas)"},
+                    "product_type": {"type": "string", "description": "Product type (e.g. 'Barrier Reverse Convertible', 'Autocallable')"},
+                    "limit": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_underlyings_of_product",
+            "description": "Fetch underlying basket constituents, strike levels, spot prices, current prices, barrier levels, and breach status for a product or RFQ.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
+                },
+                "required": ["product_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_fees_of_product",
+            "description": "Fetch the fee schedule (distribution fee, structuring fee, management fee, exchange fee, total fee % and monetary amount) for a product or RFQ.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
+                    "fee_type": {"type": "string", "description": "Optional fee category filter (e.g. 'distribution', 'structuring', 'all')"},
+                },
+                "required": ["product_id"],
+            },
+        },
+    },
+]
+
+TOOL_RUNNERS = {
+    "get_rfqs": lambda args: [r.model_dump() for r in sld_service.get_rfqs(**args)],
+    "get_underlyings_of_product": lambda args: sld_service.get_underlyings_of_product(**args).model_dump(),
+    "get_fees_of_product": lambda args: sld_service.get_fees_of_product(**args).model_dump(),
+}
 
 
-class DummyLLMService:
-    """Swap this service for a real LLM client later."""
+class LLMService:
+    """Iterative tool-calling agent service.
+    
+    1. Sends the user query and tool descriptions to the LLM.
+    2. The LLM determines which calls to make in which order with which arguments.
+    3. The backend executes the API calls instructed by the LLM.
+    4. The results are returned to the LLM.
+    5. If sufficient to answer, the LLM responds with the interpretation.
+       Otherwise, it instructs the backend to make additional calls until complete.
+    """
 
-    model_name = "dummy-llm-v0"
+    def __init__(self, llm_client: MockLLMClient | None = None, max_iterations: int = 5) -> None:
+        self.llm_client = llm_client or mock_llm_client
+        self.max_iterations = max_iterations
+
+    @property
+    def model_name(self) -> str:
+        return self.llm_client.model_name
+
+    async def execute_and_interpret(
+        self,
+        message: str,
+        history: list[ChatMessage] | None = None,
+    ) -> tuple[str, list[ToolCallRecord]]:
+        # 1. Prepare conversation with system instructions and user message
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the SLD Structured Products Assistant. You distribute and answer inquiries about RFQs, "
+                    "underlying assets, and fee schedules for structured products in the SLD application. "
+                    "Determine which tools to call with which arguments. When the backend provides the results, "
+                    "evaluate if you have sufficient information to answer the user query. "
+                    "If sufficient, return the final interpretation. Otherwise, instruct the backend to make additional calls."
+                ),
+            }
+        ]
+        for item in (history or []):
+            messages.append({"role": item.role, "content": item.content})
+        messages.append({"role": "user", "content": message.strip()})
+
+        records: list[ToolCallRecord] = []
+        iteration = 0
+
+        # Iterative loop: continue until LLM deems results sufficient or max_iterations reached
+        while iteration < self.max_iterations:
+            iteration += 1
+
+            # Give tool descriptions and current context to the LLM
+            llm_decision = await self.llm_client.query(messages=messages, tools=SLD_TOOLS)
+
+            # If LLM decides it has sufficient information (no more tool calls), finish!
+            if not llm_decision.tool_calls:
+                final_content = llm_decision.content or ""
+                header_blocks = []
+                if records:
+                    call_summaries = []
+                    for rec in records:
+                        param_strs = [f"{k}={v!r}" for k, v in rec.parameters.items() if v is not None]
+                        call_summaries.append(f"`{rec.tool}({', '.join(param_strs)})`")
+                    header_blocks.append(f"🔧 **Tools Called ({len(records)}):** {' → '.join(call_summaries)}\n")
+
+                if header_blocks and not final_content.startswith("🔧"):
+                    final_content = f"{header_blocks[0]}\n---\n\n{final_content}"
+
+                return final_content, records
+
+            # The LLM instructed the backend to call one or more tools
+            messages.append({
+                "role": "assistant",
+                "content": llm_decision.content,
+                "tool_calls": [tc.model_dump() for tc in llm_decision.tool_calls],
+            })
+
+            # Backend executes the tool calls as instructed by the LLM
+            for tc in llm_decision.tool_calls:
+                runner = TOOL_RUNNERS.get(tc.name)
+                if not runner:
+                    err_msg = {"error": f"Tool '{tc.name}' not found"}
+                    messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_msg)})
+                    continue
+
+                try:
+                    tool_output = runner(tc.arguments)
+                    messages.append({"role": "tool", "name": tc.name, "content": json.dumps(tool_output)})
+                    records.append(
+                        ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Executed {tc.name}",
+                        )
+                    )
+                except Exception as exc:
+                    err_output = {"error": str(exc)}
+                    messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_output)})
+                    records.append(
+                        ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Failed: {exc}",
+                        )
+                    )
+
+            # Results are returned to the LLM on the next iteration
+
+        # Fallback interpretation if max iterations reached
+        fallback_response = await self.llm_client.query(messages=messages, tools=None)
+        return fallback_response.content or "Completed with maximum iterations reached.", records
 
     async def generate_reply(
         self,
         message: str,
         history: list[ChatMessage] | None = None,
     ) -> str:
-        text = message.strip()
-        history_count = len(history or [])
-        lower = text.lower()
-
-        if lower in {"hi", "hello", "hey", "hallo", "hoi"}:
-            return "Hello! I am the dummy LLM behind this FastAPI chat. Ask me anything."
-        if "help" in lower:
-            return (
-                "This chat UI posts your text to POST /api/chat. "
-                "The router calls DummyLLMService.generate_reply, which you can replace "
-                "with a real model call later."
-            )
-        if lower.endswith("?"):
-            return (
-                f"Dummy answer: I would normally send your question {text!r} "
-                f"plus {history_count} previous message(s) to an LLM. "
-                "For now, this is a canned response."
-            )
-        return (
-            f"Dummy LLM received {text!r} with {history_count} previous message(s). "
-            "Replace DummyLLMService.generate_reply with a real LLM integration."
-        )
+        reply, _ = await self.execute_and_interpret(message=message, history=history)
+        return reply
 
 
-dummy_llm_service = DummyLLMService()
+dummy_llm_service = LLMService()

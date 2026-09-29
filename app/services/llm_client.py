@@ -19,31 +19,22 @@ class LLMResponse(BaseModel):
 
 
 class MockLLMClient:
-    """Mock of a proper LLM client with query() interface and tool-calling support.
+    """Mock of an intelligent LLM that supports multi-turn tool calling and iterative reasoning.
     
-    Swap this implementation with a real LLM endpoint (e.g. OpenAI, Anthropic, or an internal LLM)
-    by updating query() to invoke your real model.
+    1. Evaluates user query and available tools.
+    2. Determines which calls to make in order with appropriate arguments.
+    3. Evaluates if the tool results returned by the backend are sufficient.
+    4. If sufficient, returns the final interpretation.
+    5. If not sufficient, returns additional tool calls.
     """
 
-    model_name = "mock-sld-llm-v1"
+    model_name = "mock-sld-llm-v2"
 
     async def query(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        """Query the LLM with messages and optional tool specifications.
-        
-        - If tools are provided and the user query requires data, returns tool_calls.
-        - If tool results are present in messages (role='tool'), interprets them into a final response.
-        - Otherwise returns a conversational content reply.
-        """
-        # 1. Check if we have tool outputs to interpret
-        tool_results = [m for m in messages if m.get("role") == "tool"]
-        if tool_results:
-            return self._interpret_tool_results(tool_results)
-
-        # 2. Extract the latest user query and previous context
         user_message = ""
         for m in reversed(messages):
             if m.get("role") == "user":
@@ -57,7 +48,7 @@ class MockLLMClient:
         lower = user_message.lower().strip()
         cleaned_alpha = re.sub(r"[^a-zA-Z\s]", "", lower).strip()
 
-        # Handle greetings and generic help without calling tools
+        # Handle greetings and generic help immediately without tool calls
         if cleaned_alpha in {"hi", "hello", "hey", "hallo", "hoi", "good morning", "good day", "greetings"}:
             return LLMResponse(
                 content=(
@@ -88,70 +79,50 @@ class MockLLMClient:
                 )
             )
 
-        # If tools are available, simulate LLM tool selection and parameter extraction
-        if tools:
-            tool_calls = self._simulate_llm_tool_selection(user_message, history_texts, tools)
-            if tool_calls:
-                return LLMResponse(content=None, tool_calls=tool_calls)
+        # Collect executed tool results already provided by the backend
+        executed_tools: dict[str, Any] = {}
+        for m in messages:
+            if m.get("role") == "tool":
+                name = m.get("name")
+                raw = m.get("content", "")
+                try:
+                    executed_tools[name] = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    executed_tools[name] = raw
 
-        # Default conversational reply if no tools matched
-        return LLMResponse(
-            content=(
-                f"I received your inquiry: {user_message!r}. "
-                "You can ask me about SLD RFQs (`get_rfqs`), product underlyings (`get_underlyings_of_product`), "
-                "or fee schedules (`get_fees_of_product`)."
-            )
+        # Identify required information
+        needed_tools = self._detect_needed_tools(user_message, history_texts)
+
+        # Check if the tools returned so far are sufficient to answer the user query
+        is_sufficient = bool(
+            executed_tools
+            and all(t in executed_tools for t in needed_tools)
         )
 
-    def _simulate_llm_tool_selection(
-        self,
-        user_message: str,
-        history: list[str],
-        tools: list[dict[str, Any]],
-    ) -> list[LLMToolCall]:
-        """Simulate how an LLM parses semantic intent and tool parameters."""
-        tool_names = {t["function"]["name"] for t in tools if "function" in t}
+        # If sufficient or no tools are being provided, interpret the results
+        if is_sufficient or not tools:
+            return self._interpret_tool_results(executed_tools, user_message)
+
+        # Otherwise, the LLM determines what additional calls are still needed
+        remaining_tools = [t for t in needed_tools if t not in executed_tools]
+        if not remaining_tools and not executed_tools:
+            remaining_tools = ["get_rfqs"]
+
+        next_calls = self._plan_tool_calls(
+            remaining_tools, user_message, history_texts, executed_tools, tools
+        )
+
+        if next_calls:
+            return LLMResponse(content=None, tool_calls=next_calls)
+
+        # Fallback interpretation if no more tool calls can be planned
+        return self._interpret_tool_results(executed_tools, user_message)
+
+    def _detect_needed_tools(self, user_message: str, history: list[str]) -> list[str]:
+        """Detect what tools are required to answer the user inquiry."""
         lower = user_message.lower()
+        needed = []
 
-        # Extract identifiers from user query or recent history
-        rfq_match = re.search(r"\b(RFQ[-_ ]?\d+)\b", user_message, re.IGNORECASE)
-        rfq_id = None
-        if rfq_match:
-            rfq_id = re.sub(r"[-_ ]", "-", rfq_match.group(1)).upper()
-            if not rfq_id.startswith("RFQ-"):
-                rfq_id = "RFQ-" + rfq_id[3:]
-
-        isin_match = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", user_message, re.IGNORECASE)
-        isin = isin_match.group(1).upper() if isin_match else None
-
-        prd_match = re.search(r"\b(PRD[-_ ]?\d+)\b", user_message, re.IGNORECASE)
-        product_id = None
-        if prd_match:
-            product_id = re.sub(r"[-_ ]", "-", prd_match.group(1)).upper()
-            if not product_id.startswith("PRD-"):
-                product_id = "PRD-" + product_id[3:]
-        elif isin:
-            product_id = isin
-        elif rfq_id:
-            product_id = rfq_id
-
-        # Carryover from history
-        if not product_id and not rfq_id:
-            for text in reversed(history[-6:]):
-                hist_rfq = re.search(r"\b(RFQ[-_ ]?\d+)\b", text, re.IGNORECASE)
-                if hist_rfq:
-                    rfq_id = re.sub(r"[-_ ]", "-", hist_rfq.group(1)).upper()
-                    if not rfq_id.startswith("RFQ-"):
-                        rfq_id = "RFQ-" + rfq_id[3:]
-                    product_id = rfq_id
-                    break
-                hist_isin = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", text, re.IGNORECASE)
-                if hist_isin:
-                    isin = hist_isin.group(1).upper()
-                    product_id = isin
-                    break
-
-        # Check intent
         is_asking_underlyings = bool(
             re.search(r"\b(underlying|underlyings|basket|shares|stocks|components|barrier|strike|spot)\b", lower)
         )
@@ -170,34 +141,90 @@ class MockLLMClient:
             or (any(iss in lower for iss in ["zkb", "ubs", "vontobel", "bnp", "lukb"]) and not is_asking_underlyings and not is_asking_fees)
         )
 
-        selected_calls: list[LLMToolCall] = []
+        # Check multi-step dependency: e.g. "What are the fees for the open Swiss RFQ?"
+        # Needs get_rfqs first to find the product ID, then get_fees_of_product!
+        rfq_match = re.search(r"\b(RFQ[-_ ]?\d+)\b", user_message, re.IGNORECASE)
+        has_direct_id = bool(rfq_match or re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", user_message, re.IGNORECASE) or re.search(r"\b(PRD[-_ ]?\d+)\b", user_message, re.IGNORECASE))
 
-        if is_asking_underlyings and "get_underlyings_of_product" in tool_names:
-            selected_calls.append(
-                LLMToolCall(
-                    id=f"call_{len(selected_calls)+1}",
-                    name="get_underlyings_of_product",
-                    arguments={"product_id": product_id or "RFQ-101"},
-                )
-            )
+        if not has_direct_id and (is_asking_fees or is_asking_underlyings) and any(kw in lower for kw in ["open", "traded", "quoted", "swiss", "usd", "chf"]):
+            # Multi-step: must find the RFQ first
+            needed.append("get_rfqs")
 
-        if is_asking_fees and "get_fees_of_product" in tool_names:
-            fee_type = "distribution" if "distribution" in lower else ("structuring" if "structuring" in lower else None)
-            args: dict[str, Any] = {"product_id": product_id or "RFQ-101"}
-            if fee_type:
-                args["fee_type"] = fee_type
-            selected_calls.append(
-                LLMToolCall(
-                    id=f"call_{len(selected_calls)+1}",
-                    name="get_fees_of_product",
-                    arguments=args,
-                )
-            )
+        if is_asking_underlyings:
+            needed.append("get_underlyings_of_product")
+        if is_asking_fees:
+            needed.append("get_fees_of_product")
+        if has_rfq_intent and "get_rfqs" not in needed:
+            needed.append("get_rfqs")
 
-        if (has_rfq_intent or not selected_calls) and "get_rfqs" in tool_names:
+        if not needed:
+            needed.append("get_rfqs")
+
+        return needed
+
+    def _plan_tool_calls(
+        self,
+        remaining_tools: list[str],
+        user_message: str,
+        history: list[str],
+        executed_tools: dict[str, Any],
+        tools: list[dict[str, Any]],
+    ) -> list[LLMToolCall]:
+        """Determine specific tool calls with arguments, resolving dependencies from prior results."""
+        available_tool_names = {t["function"]["name"] for t in tools if "function" in t}
+        lower = user_message.lower()
+
+        # Resolve product_id from direct input, history, or prior executed tool outputs
+        product_id = None
+
+        # 1. From executed RFQ tool results (multi-step dependency!)
+        if "get_rfqs" in executed_tools:
+            rfq_data = executed_tools["get_rfqs"]
+            if isinstance(rfq_data, list) and len(rfq_data) > 0:
+                first_rfq = rfq_data[0]
+                product_id = first_rfq.get("product_id") or first_rfq.get("rfq_id")
+
+        # 2. From direct message
+        if not product_id:
+            rfq_match = re.search(r"\b(RFQ[-_ ]?\d+)\b", user_message, re.IGNORECASE)
+            if rfq_match:
+                product_id = re.sub(r"[-_ ]", "-", rfq_match.group(1)).upper()
+                if not product_id.startswith("RFQ-"):
+                    product_id = "RFQ-" + product_id[3:]
+
+        if not product_id:
+            isin_match = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", user_message, re.IGNORECASE)
+            if isin_match:
+                product_id = isin_match.group(1).upper()
+
+        if not product_id:
+            prd_match = re.search(r"\b(PRD[-_ ]?\d+)\b", user_message, re.IGNORECASE)
+            if prd_match:
+                product_id = re.sub(r"[-_ ]", "-", prd_match.group(1)).upper()
+                if not product_id.startswith("PRD-"):
+                    product_id = "PRD-" + product_id[3:]
+
+        # 3. From history carryover
+        if not product_id:
+            for text in reversed(history[-6:]):
+                hist_rfq = re.search(r"\b(RFQ[-_ ]?\d+)\b", text, re.IGNORECASE)
+                if hist_rfq:
+                    product_id = re.sub(r"[-_ ]", "-", hist_rfq.group(1)).upper()
+                    if not product_id.startswith("RFQ-"):
+                        product_id = "RFQ-" + product_id[3:]
+                    break
+                hist_isin = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", text, re.IGNORECASE)
+                if hist_isin:
+                    product_id = hist_isin.group(1).upper()
+                    break
+
+        planned: list[LLMToolCall] = []
+
+        # If get_rfqs is required and not yet executed, execute it first
+        if "get_rfqs" in remaining_tools and "get_rfqs" in available_tool_names:
             rfq_args: dict[str, Any] = {}
-            if rfq_id:
-                rfq_args["rfq_id"] = rfq_id
+            if product_id and product_id.startswith("RFQ-"):
+                rfq_args["rfq_id"] = product_id
             for status in ["open", "quoted", "traded", "expired", "rejected"]:
                 if status in lower:
                     rfq_args["status"] = status
@@ -210,26 +237,63 @@ class MockLLMClient:
                 if iss.lower() in lower:
                     rfq_args["issuer"] = iss
                     break
-            selected_calls.append(
+            planned.append(
                 LLMToolCall(
-                    id=f"call_{len(selected_calls)+1}",
+                    id=f"call_{len(planned)+1}",
                     name="get_rfqs",
                     arguments=rfq_args,
                 )
             )
+            # If get_rfqs is discovering an unknown product, execute get_rfqs first
+            # so the next iteration can use its output to call product fees/underlyings
+            if not product_id and (len(remaining_tools) > 1):
+                return planned
 
-        return selected_calls
+        # Plan underlyings
+        if "get_underlyings_of_product" in remaining_tools and "get_underlyings_of_product" in available_tool_names:
+            planned.append(
+                LLMToolCall(
+                    id=f"call_{len(planned)+1}",
+                    name="get_underlyings_of_product",
+                    arguments={"product_id": product_id or "RFQ-101"},
+                )
+            )
 
-    def _interpret_tool_results(self, tool_results: list[dict[str, Any]]) -> LLMResponse:
-        """Simulate LLM interpretation of tool output JSON."""
+        # Plan fees
+        if "get_fees_of_product" in remaining_tools and "get_fees_of_product" in available_tool_names:
+            fee_type = "distribution" if "distribution" in lower else ("structuring" if "structuring" in lower else None)
+            args: dict[str, Any] = {"product_id": product_id or "RFQ-101"}
+            if fee_type:
+                args["fee_type"] = fee_type
+            planned.append(
+                LLMToolCall(
+                    id=f"call_{len(planned)+1}",
+                    name="get_fees_of_product",
+                    arguments=args,
+                )
+            )
+
+        return planned
+
+    def _interpret_tool_results(
+        self, executed_tools: dict[str, Any], user_message: str
+    ) -> LLMResponse:
+        """Interpret all gathered tool outputs and synthesize a comprehensive answer."""
+        if not executed_tools:
+            return LLMResponse(
+                content=(
+                    f"I received your inquiry: {user_message!r}. "
+                    "You can ask me about SLD RFQs (`get_rfqs`), product underlyings (`get_underlyings_of_product`), "
+                    "or fee schedules (`get_fees_of_product`)."
+                )
+            )
+
         sections: list[str] = []
 
-        for tr in tool_results:
-            name = tr.get("name")
-            content_raw = tr.get("content")
-            data = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
-
-            if name == "get_underlyings_of_product":
+        # 1. Underlyings
+        if "get_underlyings_of_product" in executed_tools:
+            data = executed_tools["get_underlyings_of_product"]
+            if isinstance(data, dict) and "underlyings" in data:
                 lines = [
                     f"📊 **Underlying Assets for {data['product_name']}** (`{data['isin']}` / `{data['product_id']}`)",
                     f"• **Basket Structure:** {data['basket_type']}",
@@ -253,8 +317,13 @@ class MockLLMClient:
                         f"  - Barrier: {barrier_str} [{hit_str}]"
                     )
                 sections.append("\n".join(lines))
+            elif isinstance(data, dict) and "error" in data:
+                sections.append(f"❌ **Error querying underlyings:** {data['error']}")
 
-            elif name == "get_fees_of_product":
+        # 2. Fees
+        if "get_fees_of_product" in executed_tools:
+            data = executed_tools["get_fees_of_product"]
+            if isinstance(data, dict) and "total_fee_pct" in data:
                 lines = [
                     f"💰 **Fee Structure for {data['product_name']}** (`{data['isin']}`)",
                     f"• **Base Nominal:** {data['currency']} {data['nominal']:,.2f}",
@@ -267,9 +336,13 @@ class MockLLMClient:
                     f"• *Note:* {data['description']}",
                 ]
                 sections.append("\n".join(lines))
+            elif isinstance(data, dict) and "error" in data:
+                sections.append(f"❌ **Error querying fees:** {data['error']}")
 
-            elif name == "get_rfqs":
-                rfqs = data if isinstance(data, list) else []
+        # 3. RFQs
+        if "get_rfqs" in executed_tools:
+            rfqs = executed_tools["get_rfqs"]
+            if isinstance(rfqs, list):
                 if not rfqs:
                     sections.append("🔍 No RFQs found matching the requested criteria.")
                 else:
@@ -309,6 +382,8 @@ class MockLLMClient:
 
                         lines.append("")
                     sections.append("\n".join(lines).strip())
+            elif isinstance(rfqs, dict) and "error" in rfqs:
+                sections.append(f"❌ **Error querying RFQs:** {rfqs['error']}")
 
         return LLMResponse(content="\n\n---\n\n".join(sections))
 

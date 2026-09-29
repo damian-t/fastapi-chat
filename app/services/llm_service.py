@@ -4,7 +4,7 @@ from app.models.chat import ChatMessage, ToolCallRecord
 from app.services.llm_client import MockLLMClient, mock_llm_client
 from app.services.sld_service import sld_service
 
-# Declarations of tools available to the LLM
+# Tool descriptions provided to the LLM
 SLD_TOOLS = [
     {
         "type": "function",
@@ -67,12 +67,19 @@ TOOL_RUNNERS = {
 
 
 class LLMService:
-    """Agent service that queries an LLM client to determine tool selection,
-    executes requested SLD tools, and queries the LLM to interpret the output.
+    """Iterative tool-calling agent service.
+    
+    1. Sends the user query and tool descriptions to the LLM.
+    2. The LLM determines which calls to make in which order with which arguments.
+    3. The backend executes the API calls instructed by the LLM.
+    4. The results are returned to the LLM.
+    5. If sufficient to answer, the LLM responds with the interpretation.
+       Otherwise, it instructs the backend to make additional calls until complete.
     """
 
-    def __init__(self, llm_client: MockLLMClient | None = None) -> None:
+    def __init__(self, llm_client: MockLLMClient | None = None, max_iterations: int = 5) -> None:
         self.llm_client = llm_client or mock_llm_client
+        self.max_iterations = max_iterations
 
     @property
     def model_name(self) -> str:
@@ -83,14 +90,16 @@ class LLMService:
         message: str,
         history: list[ChatMessage] | None = None,
     ) -> tuple[str, list[ToolCallRecord]]:
-        # 1. Build messages with system instructions and conversation history
+        # 1. Prepare conversation with system instructions and user message
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": (
-                    "You are the SLD Structured Products Assistant. You answer questions about "
-                    "RFQs, underlying assets, and fees for structured products in the SLD application. "
-                    "Use the available tools whenever real-time data is needed."
+                    "You are the SLD Structured Products Assistant. You distribute and answer inquiries about RFQs, "
+                    "underlying assets, and fee schedules for structured products in the SLD application. "
+                    "Determine which tools to call with which arguments. When the backend provides the results, "
+                    "evaluate if you have sufficient information to answer the user query. "
+                    "If sufficient, return the final interpretation. Otherwise, instruct the backend to make additional calls."
                 ),
             }
         ]
@@ -98,66 +107,73 @@ class LLMService:
             messages.append({"role": item.role, "content": item.content})
         messages.append({"role": "user", "content": message.strip()})
 
-        # 2. Query the LLM to determine which tools to run with what parameters
-        llm_decision = await self.llm_client.query(messages=messages, tools=SLD_TOOLS)
-
-        # If the LLM did not request any tools, return its conversational answer directly
-        if not llm_decision.tool_calls:
-            return llm_decision.content or "", []
-
-        # 3. Execute the tools chosen by the LLM
         records: list[ToolCallRecord] = []
-        messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [tc.model_dump() for tc in llm_decision.tool_calls],
-        })
+        iteration = 0
 
-        for tc in llm_decision.tool_calls:
-            runner = TOOL_RUNNERS.get(tc.name)
-            if not runner:
-                error_msg = {"error": f"Tool '{tc.name}' not found"}
-                messages.append({"role": "tool", "name": tc.name, "content": json.dumps(error_msg)})
-                continue
+        # Iterative loop: continue until LLM deems results sufficient or max_iterations reached
+        while iteration < self.max_iterations:
+            iteration += 1
 
-            try:
-                tool_output = runner(tc.arguments)
-                messages.append({"role": "tool", "name": tc.name, "content": json.dumps(tool_output)})
-                records.append(
-                    ToolCallRecord(
-                        tool=tc.name,
-                        parameters=tc.arguments,
-                        summary=f"Executed {tc.name}",
+            # Give tool descriptions and current context to the LLM
+            llm_decision = await self.llm_client.query(messages=messages, tools=SLD_TOOLS)
+
+            # If LLM decides it has sufficient information (no more tool calls), finish!
+            if not llm_decision.tool_calls:
+                final_content = llm_decision.content or ""
+                header_blocks = []
+                if records:
+                    call_summaries = []
+                    for rec in records:
+                        param_strs = [f"{k}={v!r}" for k, v in rec.parameters.items() if v is not None]
+                        call_summaries.append(f"`{rec.tool}({', '.join(param_strs)})`")
+                    header_blocks.append(f"🔧 **Tools Called ({len(records)}):** {' → '.join(call_summaries)}\n")
+
+                if header_blocks and not final_content.startswith("🔧"):
+                    final_content = f"{header_blocks[0]}\n---\n\n{final_content}"
+
+                return final_content, records
+
+            # The LLM instructed the backend to call one or more tools
+            messages.append({
+                "role": "assistant",
+                "content": llm_decision.content,
+                "tool_calls": [tc.model_dump() for tc in llm_decision.tool_calls],
+            })
+
+            # Backend executes the tool calls as instructed by the LLM
+            for tc in llm_decision.tool_calls:
+                runner = TOOL_RUNNERS.get(tc.name)
+                if not runner:
+                    err_msg = {"error": f"Tool '{tc.name}' not found"}
+                    messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_msg)})
+                    continue
+
+                try:
+                    tool_output = runner(tc.arguments)
+                    messages.append({"role": "tool", "name": tc.name, "content": json.dumps(tool_output)})
+                    records.append(
+                        ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Executed {tc.name}",
+                        )
                     )
-                )
-            except Exception as exc:
-                err_output = {"error": str(exc)}
-                messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_output)})
-                records.append(
-                    ToolCallRecord(
-                        tool=tc.name,
-                        parameters=tc.arguments,
-                        summary=f"Failed: {exc}",
+                except Exception as exc:
+                    err_output = {"error": str(exc)}
+                    messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_output)})
+                    records.append(
+                        ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Failed: {exc}",
+                        )
                     )
-                )
 
-        # 4. Query the LLM again to interpret the tool results into a user-facing answer
-        interpretation = await self.llm_client.query(messages=messages)
+            # Results are returned to the LLM on the next iteration
 
-        # Prepend tool execution banner for user visibility
-        header_blocks = []
-        if records:
-            call_summaries = []
-            for rec in records:
-                param_strs = [f"{k}={v!r}" for k, v in rec.parameters.items() if v is not None]
-                call_summaries.append(f"`{rec.tool}({', '.join(param_strs)})`")
-            header_blocks.append(f"🔧 **Tools Called:** {' & '.join(call_summaries)}\n")
-
-        final_reply = "\n\n---\n\n".join(
-            filter(None, [("\n".join(header_blocks) if header_blocks else None), interpretation.content])
-        )
-
-        return final_reply, records
+        # Fallback interpretation if max iterations reached
+        fallback_response = await self.llm_client.query(messages=messages, tools=None)
+        return fallback_response.content or "Completed with maximum iterations reached.", records
 
     async def generate_reply(
         self,

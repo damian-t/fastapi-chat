@@ -202,13 +202,28 @@ class GeminiLLMClient(BaseLLMClient):
             "temperature": self.temperature,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(endpoint, headers=headers, json=payload)
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"Gemini API returned status {resp.status_code}: {resp.text}"
-                )
-            data = resp.json()
+        data = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        break
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                        import asyncio
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise RuntimeError(
+                        f"Gemini API returned status {resp.status_code}: {resp.text}"
+                    )
+            except (httpx.TimeoutException, httpx.NetworkError) as err:
+                if attempt < max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Network error communicating with Gemini: {err}")
 
         choices = data.get("choices", [])
         if not choices:

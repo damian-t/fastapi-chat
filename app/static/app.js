@@ -4,16 +4,46 @@ const formEl = document.getElementById("chatForm");
 const inputEl = document.getElementById("chatInput");
 const sendBtnEl = document.getElementById("sendBtn");
 const newChatBtnEl = document.getElementById("newChatBtn");
+const modeSelectEl = document.getElementById("modeSelect");
+const modelBadgeEl = document.getElementById("modelBadge");
+const footerModelEl = document.getElementById("footerModel");
 
 const chatHistory = [];
 let typingEl = null;
+
+async function loadModes() {
+  try {
+    const res = await fetch("/api/chat/modes");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.default_mode && modeSelectEl) {
+        modeSelectEl.value = data.default_mode;
+        updateModelLabels(data.default_mode === "gemini" ? "gemini-3.8-flash" : "mock-sld-llm-v2");
+      }
+    }
+  } catch (err) {
+    console.warn("Could not load chat modes:", err);
+  }
+}
+
+function updateModelLabels(modelName) {
+  if (modelBadgeEl) modelBadgeEl.textContent = modelName;
+  if (footerModelEl) footerModelEl.textContent = modelName;
+}
+
+if (modeSelectEl) {
+  modeSelectEl.addEventListener("change", () => {
+    const isGemini = modeSelectEl.value === "gemini";
+    updateModelLabels(isGemini ? "gemini-3.8-flash" : "mock-sld-llm-v2");
+  });
+}
 
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function hideEmptyState() {
-  if (emptyStateEl) {
+  if (emptyStateEl && emptyStateEl.parentNode) {
     emptyStateEl.remove();
   }
 }
@@ -86,6 +116,8 @@ async function sendMessage(text) {
   setSending(true);
   showTyping();
 
+  const currentMode = modeSelectEl ? modeSelectEl.value : "mock";
+
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -93,17 +125,22 @@ async function sendMessage(text) {
       body: JSON.stringify({
         message: text,
         history: chatHistory.slice(-10),
+        mode: currentMode,
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`Backend returned ${response.status}`);
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.detail || `Backend returned ${response.status}`);
     }
 
     const data = await response.json();
     hideTyping();
     addMessage("assistant", data.reply);
     chatHistory.push({ role: "assistant", content: data.reply });
+    if (data.model) {
+      updateModelLabels(data.model);
+    }
   } catch (error) {
     hideTyping();
     addMessage("assistant", `Error: ${error.message}`, "error");
@@ -134,10 +171,13 @@ inputEl.addEventListener("keydown", (event) => {
 newChatBtnEl.addEventListener("click", () => {
   chatHistory.length = 0;
   messagesEl.innerHTML = "";
-  messagesEl.appendChild(emptyStateEl);
+  if (emptyStateEl) {
+    messagesEl.appendChild(emptyStateEl);
+  }
   inputEl.value = "";
   autosizeInput();
   inputEl.focus();
 });
 
+loadModes();
 inputEl.focus();

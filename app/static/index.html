@@ -10,11 +10,25 @@
     <div class="app-shell">
       <aside class="sidebar">
         <button id="newChatBtn" class="new-chat" type="button">+ New chat</button>
+
+        <div class="mode-control-wrap">
+          <label for="modeSelect" class="mode-label">Mode / LLM</label>
+          <select id="modeSelect" class="mode-select">
+            <option value="mock">Mock LLM (Deterministic)</option>
+            <option value="gemini">Gemini 3.8 Flash (Live)</option>
+          </select>
+        </div>
+
         <div class="sidebar-note">
           <strong>SLD Assistant</strong><br />
-          Ask questions about structured products RFQs, underlying baskets, and fee structures. The chatbot determines tool calls to <code>get_rfqs</code>, <code>get_underlyings_of_product</code>, and <code>get_fees_of_product</code>.
+          Ask questions about structured products RFQs, underlying baskets, and fee structures. The assistant figures out tool calls to:
+          <ul style="padding-left: 18px; margin: 8px 0 0 0; line-height: 1.4;">
+            <li><code>get_rfqs</code></li>
+            <li><code>get_underlyings_of_product</code></li>
+            <li><code>get_fees_of_product</code></li>
+          </ul>
         </div>
-        <div class="sidebar-footer">FastAPI · sld-assistant-dummy-v1</div>
+        <div class="sidebar-footer">FastAPI · <span id="footerModel">mock-sld-llm-v2</span></div>
       </aside>
 
       <main class="chat-panel">
@@ -23,7 +37,7 @@
             <h1>SLD RFQ Assistant</h1>
             <p>Structured Products RFQs, Underlyings & Fee Inquiries backed by <code>POST /api/chat</code></p>
           </div>
-          <span class="model-badge">SLD Assistant</span>
+          <span id="modelBadge" class="model-badge">mock-sld-llm-v2</span>
         </header>
 
         <section id="messages" class="messages" aria-live="polite">

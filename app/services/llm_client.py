@@ -18,7 +18,229 @@ class LLMResponse(BaseModel):
         return self.content or ""
 
 
-class MockLLMClient:
+
+def get_gemini_api_key() -> str | None:
+    """Retrieve Gemini or Google API key from environment or known config paths."""
+    import os
+    from pathlib import Path
+
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if key:
+        return key
+
+    local_env = Path(__file__).resolve().parent.parent.parent / ".env"
+    if local_env.exists():
+        try:
+            from dotenv import dotenv_values
+            vals = dotenv_values(local_env)
+            key = vals.get("GEMINI_API_KEY") or vals.get("GOOGLE_API_KEY")
+            if key:
+                return key
+        except ImportError:
+            pass
+
+    hermes_env = Path.home() / ".hermes" / ".env"
+    if hermes_env.exists():
+        try:
+            from dotenv import dotenv_values
+            vals = dotenv_values(hermes_env)
+            key = vals.get("GEMINI_API_KEY") or vals.get("GOOGLE_API_KEY")
+            if key:
+                return key
+        except ImportError:
+            pass
+
+    return None
+
+
+def _parse_single_tool_call(item: Any) -> LLMToolCall | None:
+    """Parse a single tool call dictionary into LLMToolCall."""
+    import os
+    if not isinstance(item, dict):
+        return None
+
+    name = item.get("name") or item.get("tool") or item.get("tool_name")
+    if not name and isinstance(item.get("function"), dict):
+        name = item["function"].get("name")
+    elif not name and isinstance(item.get("function"), str):
+        name = item.get("function")
+
+    if not name or not isinstance(name, str):
+        return None
+
+    args = (
+        item.get("arguments")
+        or item.get("parameters")
+        or item.get("args")
+        or item.get("params")
+    )
+    if args is None and isinstance(item.get("function"), dict):
+        args = item["function"].get("arguments") or item["function"].get("parameters")
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {}
+    elif not isinstance(args, dict):
+        args = {}
+
+    call_id = item.get("id") or f"call_{name}_{os.urandom(4).hex()}"
+    return LLMToolCall(id=call_id, name=name, arguments=args)
+
+
+def extract_tool_calls(text: str) -> list[LLMToolCall]:
+    """Extract tool calls from Gemini's prompt response."""
+    if not text:
+        return []
+
+    fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    candidates = list(fences)
+
+    brace_match = re.search(r"(\{[\s\S]*\})", text)
+    if brace_match and not candidates:
+        candidates.append(brace_match.group(1))
+
+    bracket_match = re.search(r"(\[[\s\S]*\])", text)
+    if bracket_match and not candidates:
+        candidates.append(bracket_match.group(1))
+
+    candidates.append(text)
+
+    for cand in candidates:
+        cand_str = cand.strip()
+        if not cand_str:
+            continue
+        try:
+            parsed = json.loads(cand_str)
+        except Exception:
+            continue
+
+        if isinstance(parsed, dict):
+            calls_list = parsed.get("tool_calls") or parsed.get("tools") or parsed.get("calls")
+            if isinstance(calls_list, list):
+                res = [_parse_single_tool_call(x) for x in calls_list]
+                valid = [x for x in res if x is not None]
+                if valid:
+                    return valid
+
+            tc = _parse_single_tool_call(parsed)
+            if tc:
+                return [tc]
+
+        elif isinstance(parsed, list):
+            res = [_parse_single_tool_call(x) for x in parsed]
+            valid = [x for x in res if x is not None]
+            if valid:
+                return valid
+
+    return []
+
+
+class BaseLLMClient:
+    model_name: str
+    is_prompt_only: bool = False
+
+    async def query(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        raise NotImplementedError
+
+
+class GeminiLLMClient(BaseLLMClient):
+    """Google Gemini 3.8 Flash LLM Client.
+    
+    Operates strictly via prompt-based tool reasoning (no native function calling API):
+    1. Tool descriptions are embedded directly in the prompt context.
+    2. The model outputs tool call plans in JSON when information is required.
+    3. The backend executes functions and passes results back together with user query.
+    4. Gemini iterates until returning the final natural language interpretation.
+    """
+
+    model_name = "gemini-3.8-flash"
+    is_prompt_only = True
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
+        model: str = "gemini-3.8-flash",
+        temperature: float = 0.0,
+        timeout: float = 30.0,
+    ) -> None:
+        self.api_key = api_key or get_gemini_api_key()
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.model_name = model
+        self.temperature = temperature
+        self.timeout = timeout
+
+    async def query(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        import httpx
+        key = self.api_key or get_gemini_api_key()
+        if not key:
+            raise ValueError(
+                "Gemini API key not found. Please set GEMINI_API_KEY or GOOGLE_API_KEY "
+                "in your environment or .env file."
+            )
+
+        # Gemini interaction is STRICTLY prompt-based: do NOT pass tools parameter to API
+        endpoint = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+
+        data = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        break
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                        import asyncio
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise RuntimeError(
+                        f"Gemini API returned status {resp.status_code}: {resp.text}"
+                    )
+            except (httpx.TimeoutException, httpx.NetworkError) as err:
+                if attempt < max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Network error communicating with Gemini: {err}")
+
+        choices = data.get("choices", [])
+        if not choices:
+            return LLMResponse(content="No response received from Gemini.")
+
+        raw_content = choices[0].get("message", {}).get("content", "") or ""
+        tool_calls = extract_tool_calls(raw_content)
+
+        if tool_calls:
+            return LLMResponse(content=raw_content, tool_calls=tool_calls)
+
+        return LLMResponse(content=raw_content, tool_calls=[])
+
+
+class MockLLMClient(BaseLLMClient):
+    is_prompt_only = False
+
     """Mock of an intelligent LLM that supports multi-turn tool calling and iterative reasoning.
     
     1. Evaluates user query and available tools.
@@ -389,3 +611,5 @@ class MockLLMClient:
 
 
 mock_llm_client = MockLLMClient()
+
+gemini_llm_client = GeminiLLMClient()

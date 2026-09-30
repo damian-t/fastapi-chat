@@ -2,12 +2,84 @@
 
 FastAPI chatbot and mock REST tools for **SLD**, an application that distributes and answers Requests for Quotes (RFQs) for structured products.
 
-## Run
+The API supports **two execution modes**:
+1. **Mock LLM (`mock`)**: Fast, deterministic local simulated agent with multi-turn iterative reasoning.
+2. **Gemini 3.8 Flash (`gemini`)**: Real LLM interaction powered by Google Gemini 3.8 Flash (`gemini-3.8-flash`) using prompt-based tool reasoning (no function-calling API, descriptions in context, multi-turn iteration).
+
+---
+
+## Quickstart
+
+### 1. Install & Configure
+```bash
+pip install -r requirements.txt
+```
+
+Set your API key (if using Gemini mode):
+```bash
+export GOOGLE_API_KEY="your-google-api-key"
+# or
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+Configure default mode via environment variable (optional, defaults to `mock`):
+```bash
+export LLM_MODE=gemini # or "mock"
+```
+
+### 2. Run the Server
 ```bash
 uvicorn app.main:app --reload
 ```
-Interactive docs: `http://127.0.0.1:8000/docs`  
-Chat UI: `http://127.0.0.1:8000/`
+- Interactive Swagger docs: `http://127.0.0.1:8000/docs`
+- Modern Chat UI: `http://127.0.0.1:8000/`
+
+---
+
+## Operating Modes
+
+### Mode 1: Mock LLM (`mock`)
+- Model reported: `mock-sld-llm-v2`
+- Deterministic heuristic agent that detects intents, plans sequential tool executions, evaluates sufficiency, and formats financial interpretations.
+- Runs without any API key or external network dependency.
+
+### Mode 2: Gemini 3.8 Flash (`gemini`)
+- Model reported: `gemini-3.8-flash`
+- **Prompt-only tool calling**: The LLM interacts strictly through prompt context containing descriptions of the 3 SLD tools.
+- **Workflow**:
+  1. The backend provides the system prompt and tool definitions in the LLM's context.
+  2. Gemini figures out whether tools are needed and outputs a structured JSON plan with parameters.
+  3. The backend executes the corresponding function(s) against SLD data.
+  4. The backend sends the execution results back to Gemini along with the original user query.
+  5. Gemini evaluates the new data against the user query. If more calls are needed (multi-step dependency), it outputs the next tool call; otherwise, it answers the question and interprets the financial metrics.
+
+---
+
+## Selecting Modes via API
+
+`POST /api/chat` accepts an optional `mode` property:
+
+```json
+{
+  "message": "Show all open RFQs in USD",
+  "mode": "gemini"
+}
+```
+
+Or for mock mode:
+```json
+{
+  "message": "What are the fees for product CH1261564201?",
+  "mode": "mock"
+}
+```
+
+Query available modes:
+```bash
+curl http://127.0.0.1:8000/api/chat/modes
+```
+
+---
 
 ## Integrated SLD Tools & REST Endpoints
 
@@ -21,13 +93,11 @@ Chat UI: `http://127.0.0.1:8000/`
    - REST: `GET /api/sld/products/{product_id}/fees` (or `GET /api/sld/fees?product_id=...`)
    - Returns structured product fee schedules (distribution fee, structuring fee, recurring management fee, exchange fee, monetary amounts).
 
-## Chatbot Agent Flow (`POST /api/chat`)
-1. **Understands Intent:** Parses the user question to detect RFQ queries, underlying requests, fee breakdowns, or multi-tool combinations.
-2. **Extracts Parameters:** Identifies identifiers (`RFQ-101`, `CH1261564201`, etc.), lifecycle status (`open`, `traded`), currency (`USD`, `CHF`), product types, and carries over conversational context.
-3. **Executes Tools:** Calls the relevant mock service methods.
-4. **Interprets Results:** Synthesizes financial metrics (spreads, coupons, barrier safety, fee totals) and returns a human-readable response alongside structured tool call records.
+---
 
-## Tests
+## Running Tests
+
+Run full test suite (unit tests, mock agent tests, prompt tool extraction tests, and live Gemini tests):
 ```bash
 pytest
 ```

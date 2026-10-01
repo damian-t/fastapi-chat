@@ -42,8 +42,6 @@ class Underlying(BaseModel):
     performance_pct: float
     barrier_hit: bool = False
     distance_to_barrier_pct: float | None = None
-    product_id: str | None = None
-    isin: str | None = None
 
 
 class ProductUnderlyingsResponse(BaseModel):
@@ -67,22 +65,3 @@ class ProductFeesResponse(BaseModel):
     total_fee_pct: float
     estimated_monetary_amount: float
     description: str
-
-
-class Product(BaseModel):
-    product_id: str
-    isin: str
-    rfq_id: str
-    product_name: str
-    product_type: str
-    basket_type: str
-    status: str
-    currency: str
-    nominal: float
-    client: str
-    created_at: str
-    expires_at: str
-    traded_with: str | None = None
-    traded_price_pct: float | None = None
-    underlyings: list[Underlying] = Field(default_factory=list)
-    fees: ProductFeesResponse | None = None

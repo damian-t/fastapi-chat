@@ -14,17 +14,24 @@ def test_api_sld_rfqs():
     res = client.get("/api/sld/rfqs")
     assert res.status_code == 200
     data = res.json()
-    assert len(data) == 5
+    assert len(data) == 10  # default page limit
+
+    # Query with larger limit to get all 100
+    res_all = client.get("/api/sld/rfqs?limit=100")
+    assert res_all.status_code == 200
+    assert len(res_all.json()) == 100
 
     # Filter status
     res = client.get("/api/sld/rfqs?status=open")
     assert res.status_code == 200
-    assert len(res.json()) == 2
+    assert len(res.json()) > 0
+    assert all(r["status"] == "open" for r in res.json())
 
     # Filter currency
     res = client.get("/api/sld/rfqs?currency=CHF")
     assert res.status_code == 200
-    assert len(res.json()) == 2
+    assert len(res.json()) > 0
+    assert all(r["currency"] == "CHF" for r in res.json())
 
 
 def test_api_sld_underlyings():
@@ -55,3 +62,6 @@ def test_api_sld_fees():
 def test_api_sld_not_found():
     res = client.get("/api/sld/products/NONEXISTENT/underlyings")
     assert res.status_code == 404
+
+    res_f = client.get("/api/sld/products/NONEXISTENT/fees")
+    assert res_f.status_code == 404

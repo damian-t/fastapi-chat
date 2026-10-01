@@ -1,4 +1,8 @@
+import csv
+import json
+from pathlib import Path
 from typing import Any
+
 from app.models.sld import (
     RFQ,
     RFQQuote,
@@ -7,446 +11,167 @@ from app.models.sld import (
     ProductFeesResponse,
 )
 
+DEFAULT_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "rfq_products.csv"
+
 
 class SLDService:
-    """Mock SLD Service providing data for structured product RFQs, underlyings, and fees."""
+    """Mock SLD Service providing structured product RFQs, underlyings, and fees loaded from CSV."""
 
-    def __init__(self) -> None:
-        self._rfqs: list[dict[str, Any]] = [
-            {
-                "rfq_id": "RFQ-101",
-                "product_id": "PRD-101",
-                "isin": "CH1261564201",
-                "product_name": "12M Multi Barrier Reverse Convertible on NESN, NOVN, ROG",
-                "product_type": "Barrier Reverse Convertible",
-                "status": "quoted",
-                "currency": "CHF",
-                "nominal": 100000.0,
-                "client": "Zurich Cantonal Wealth",
-                "underlyings": ["NESN SW", "NOVN SW", "ROG SW"],
-                "quotes": [
-                    {
-                        "issuer": "ZKB",
-                        "price_pct": 99.85,
-                        "coupon_pct_pa": 7.20,
-                        "timestamp": "2026-09-28T09:20:00Z",
-                        "valid_until": "2026-09-28T16:00:00Z",
-                    },
-                    {
-                        "issuer": "UBS",
-                        "price_pct": 99.70,
-                        "coupon_pct_pa": 7.10,
-                        "timestamp": "2026-09-28T09:22:00Z",
-                        "valid_until": "2026-09-28T16:00:00Z",
-                    },
-                    {
-                        "issuer": "Vontobel",
-                        "price_pct": 100.10,
-                        "coupon_pct_pa": 7.25,
-                        "timestamp": "2026-09-28T09:25:00Z",
-                        "valid_until": "2026-09-28T16:00:00Z",
-                    },
-                ],
-                "best_quote": {
-                    "issuer": "Vontobel",
-                    "price_pct": 100.10,
-                    "coupon_pct_pa": 7.25,
-                    "timestamp": "2026-09-28T09:25:00Z",
-                    "valid_until": "2026-09-28T16:00:00Z",
-                },
-                "traded_with": None,
-                "traded_price_pct": None,
-                "created_at": "2026-09-28T09:15:00Z",
-                "expires_at": "2026-09-28T16:00:00Z",
-            },
-            {
-                "rfq_id": "RFQ-102",
-                "product_id": "PRD-102",
-                "isin": "CH1261564202",
-                "product_name": "6M Autocallable BRC on AAPL, MSFT, NVDA",
-                "product_type": "Autocallable BRC",
-                "status": "open",
-                "currency": "USD",
-                "nominal": 250000.0,
-                "client": "Geneva Global Alpha",
-                "underlyings": ["AAPL US", "MSFT US", "NVDA US"],
-                "quotes": [
-                    {
-                        "issuer": "BNP Paribas",
-                        "price_pct": 99.90,
-                        "coupon_pct_pa": 9.50,
-                        "timestamp": "2026-09-29T08:45:00Z",
-                        "valid_until": "2026-09-29T17:00:00Z",
-                    }
-                ],
-                "best_quote": {
-                    "issuer": "BNP Paribas",
-                    "price_pct": 99.90,
-                    "coupon_pct_pa": 9.50,
-                    "timestamp": "2026-09-29T08:45:00Z",
-                    "valid_until": "2026-09-29T17:00:00Z",
-                },
-                "traded_with": None,
-                "traded_price_pct": None,
-                "created_at": "2026-09-29T08:30:00Z",
-                "expires_at": "2026-09-29T17:00:00Z",
-            },
-            {
-                "rfq_id": "RFQ-103",
-                "product_id": "PRD-103",
-                "isin": "CH1261564203",
-                "product_name": "2Y Capital Protection Certificate on Euro Stoxx 50",
-                "product_type": "Capital Protection",
-                "status": "traded",
-                "currency": "EUR",
-                "nominal": 500000.0,
-                "client": "Basel Institutional Funds",
-                "underlyings": ["SX5E EU"],
-                "quotes": [
-                    {
-                        "issuer": "ZKB",
-                        "price_pct": 100.00,
-                        "coupon_pct_pa": 3.50,
-                        "timestamp": "2026-09-27T11:15:00Z",
-                        "valid_until": "2026-09-27T16:00:00Z",
-                    },
-                    {
-                        "issuer": "UBS",
-                        "price_pct": 99.80,
-                        "coupon_pct_pa": 3.25,
-                        "timestamp": "2026-09-27T11:20:00Z",
-                        "valid_until": "2026-09-27T16:00:00Z",
-                    },
-                ],
-                "best_quote": {
-                    "issuer": "ZKB",
-                    "price_pct": 100.00,
-                    "coupon_pct_pa": 3.50,
-                    "timestamp": "2026-09-27T11:15:00Z",
-                    "valid_until": "2026-09-27T16:00:00Z",
-                },
-                "traded_with": "ZKB",
-                "traded_price_pct": 100.00,
-                "created_at": "2026-09-27T11:00:00Z",
-                "expires_at": "2026-09-27T16:00:00Z",
-            },
-            {
-                "rfq_id": "RFQ-104",
-                "product_id": "PRD-104",
-                "isin": "CH1261564204",
-                "product_name": "18M Barrier Reverse Convertible on ABB, Sika, Geberit",
-                "product_type": "Barrier Reverse Convertible",
-                "status": "open",
-                "currency": "CHF",
-                "nominal": 150000.0,
-                "client": "Lugano Private Clients",
-                "underlyings": ["ABBN SW", "SIKA SW", "GEBN SW"],
-                "quotes": [],
-                "best_quote": None,
-                "traded_with": None,
-                "traded_price_pct": None,
-                "created_at": "2026-09-29T09:45:00Z",
-                "expires_at": "2026-09-29T18:00:00Z",
-            },
-            {
-                "rfq_id": "RFQ-105",
-                "product_id": "PRD-105",
-                "isin": "CH1261564205",
-                "product_name": "3M Reverse Convertible on Tesla and Amazon",
-                "product_type": "Reverse Convertible",
-                "status": "expired",
-                "currency": "USD",
-                "nominal": 75000.0,
-                "client": "EAM Zurich Partners",
-                "underlyings": ["TSLA US", "AMZN US"],
-                "quotes": [
-                    {
-                        "issuer": "UBS",
-                        "price_pct": 99.50,
-                        "coupon_pct_pa": 8.80,
-                        "timestamp": "2026-09-25T14:30:00Z",
-                        "valid_until": "2026-09-25T17:00:00Z",
-                    }
-                ],
-                "best_quote": {
-                    "issuer": "UBS",
-                    "price_pct": 99.50,
-                    "coupon_pct_pa": 8.80,
-                    "timestamp": "2026-09-25T14:30:00Z",
-                    "valid_until": "2026-09-25T17:00:00Z",
-                },
-                "traded_with": None,
-                "traded_price_pct": None,
-                "created_at": "2026-09-25T14:00:00Z",
-                "expires_at": "2026-09-25T17:00:00Z",
-            },
-        ]
+    def __init__(self, csv_path: Path | str | None = None) -> None:
+        self.csv_path = Path(csv_path) if csv_path else DEFAULT_CSV_PATH
+        self._rfqs: list[dict[str, Any]] = []
+        self._products: dict[str, dict[str, Any]] = {}
+        self._load_from_csv(self.csv_path)
 
-        self._products: dict[str, dict[str, Any]] = {
-            "PRD-101": {
-                "isin": "CH1261564201",
-                "product_name": "12M Multi Barrier Reverse Convertible on NESN, NOVN, ROG",
-                "basket_type": "Worst-of Basket",
-                "currency": "CHF",
-                "nominal": 100000.0,
-                "underlyings": [
-                    {
-                        "name": "Nestlé SA",
-                        "ticker": "NESN SW",
-                        "asset_class": "Equity",
-                        "currency": "CHF",
-                        "spot_price": 94.20,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 65.0,
-                        "current_price": 93.50,
-                        "performance_pct": -0.74,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 34.20,
-                    },
-                    {
-                        "name": "Novartis AG",
-                        "ticker": "NOVN SW",
-                        "asset_class": "Equity",
-                        "currency": "CHF",
-                        "spot_price": 98.40,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 65.0,
-                        "current_price": 101.20,
-                        "performance_pct": 2.85,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 37.85,
-                    },
-                    {
-                        "name": "Roche Holding AG",
-                        "ticker": "ROG SW",
-                        "asset_class": "Equity",
-                        "currency": "CHF",
-                        "spot_price": 245.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 65.0,
-                        "current_price": 242.10,
-                        "performance_pct": -1.18,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 33.82,
-                    },
-                ],
-                "fees": {
-                    "distribution_fee_pct": 0.50,
-                    "structuring_fee_pct": 0.25,
-                    "management_fee_pct_pa": 0.00,
-                    "exchange_fee_pct": 0.05,
-                    "total_fee_pct": 0.80,
-                    "description": "Standard BRC fee model: 50 bps distribution fee, 25 bps structuring fee, 5 bps exchange clearing fee.",
-                },
-            },
-            "PRD-102": {
-                "isin": "CH1261564202",
-                "product_name": "6M Autocallable BRC on AAPL, MSFT, NVDA",
-                "basket_type": "Worst-of Basket",
-                "currency": "USD",
-                "nominal": 250000.0,
-                "underlyings": [
-                    {
-                        "name": "Apple Inc.",
-                        "ticker": "AAPL US",
-                        "asset_class": "Equity",
-                        "currency": "USD",
-                        "spot_price": 225.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 70.0,
-                        "current_price": 228.50,
-                        "performance_pct": 1.56,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 31.56,
-                    },
-                    {
-                        "name": "Microsoft Corporation",
-                        "ticker": "MSFT US",
-                        "asset_class": "Equity",
-                        "currency": "USD",
-                        "spot_price": 430.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 70.0,
-                        "current_price": 425.00,
-                        "performance_pct": -1.16,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 28.84,
-                    },
-                    {
-                        "name": "NVIDIA Corporation",
-                        "ticker": "NVDA US",
-                        "asset_class": "Equity",
-                        "currency": "USD",
-                        "spot_price": 120.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 70.0,
-                        "current_price": 124.80,
-                        "performance_pct": 4.00,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 34.00,
-                    },
-                ],
-                "fees": {
-                    "distribution_fee_pct": 0.40,
-                    "structuring_fee_pct": 0.20,
-                    "management_fee_pct_pa": 0.10,
-                    "exchange_fee_pct": 0.05,
-                    "total_fee_pct": 0.75,
-                    "description": "Autocallable US Tech fee schedule: 40 bps distribution fee, 20 bps structuring fee, 10 bps annual management fee.",
-                },
-            },
-            "PRD-103": {
-                "isin": "CH1261564203",
-                "product_name": "2Y Capital Protection Certificate on Euro Stoxx 50",
-                "basket_type": "Single Index Underlying",
-                "currency": "EUR",
-                "nominal": 500000.0,
-                "underlyings": [
-                    {
-                        "name": "Euro Stoxx 50 Index",
-                        "ticker": "SX5E EU",
-                        "asset_class": "Equity Index",
-                        "currency": "EUR",
-                        "spot_price": 4900.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": None,
-                        "current_price": 4950.00,
-                        "performance_pct": 1.02,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": None,
-                    }
-                ],
-                "fees": {
-                    "distribution_fee_pct": 0.30,
-                    "structuring_fee_pct": 0.15,
-                    "management_fee_pct_pa": 0.05,
-                    "exchange_fee_pct": 0.02,
-                    "total_fee_pct": 0.52,
-                    "description": "Capital protection structure with institutional scale: 30 bps distribution, 15 bps structuring, 5 bps mgmt fee.",
-                },
-            },
-            "PRD-104": {
-                "isin": "CH1261564204",
-                "product_name": "18M Barrier Reverse Convertible on ABB, Sika, Geberit",
-                "basket_type": "Worst-of Basket",
-                "currency": "CHF",
-                "nominal": 150000.0,
-                "underlyings": [
-                    {
-                        "name": "ABB Ltd",
-                        "ticker": "ABBN SW",
-                        "asset_class": "Equity",
-                        "currency": "CHF",
-                        "spot_price": 48.50,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 60.0,
-                        "current_price": 47.90,
-                        "performance_pct": -1.24,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 38.76,
-                    },
-                    {
-                        "name": "Sika AG",
-                        "ticker": "SIKA SW",
-                        "asset_class": "Equity",
-                        "currency": "CHF",
-                        "spot_price": 265.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 60.0,
-                        "current_price": 270.20,
-                        "performance_pct": 1.96,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 41.96,
-                    },
-                    {
-                        "name": "Geberit AG",
-                        "ticker": "GEBN SW",
-                        "asset_class": "Equity",
-                        "currency": "CHF",
-                        "spot_price": 540.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 60.0,
-                        "current_price": 538.00,
-                        "performance_pct": -0.37,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 39.63,
-                    },
-                ],
-                "fees": {
-                    "distribution_fee_pct": 0.60,
-                    "structuring_fee_pct": 0.30,
-                    "management_fee_pct_pa": 0.00,
-                    "exchange_fee_pct": 0.05,
-                    "total_fee_pct": 0.95,
-                    "description": "18M Swiss industrial basket: 60 bps distribution, 30 bps structuring fee.",
-                },
-            },
-            "PRD-105": {
-                "isin": "CH1261564205",
-                "product_name": "3M Reverse Convertible on Tesla and Amazon",
-                "basket_type": "Worst-of Basket",
-                "currency": "USD",
-                "nominal": 75000.0,
-                "underlyings": [
-                    {
-                        "name": "Tesla Inc.",
-                        "ticker": "TSLA US",
-                        "asset_class": "Equity",
-                        "currency": "USD",
-                        "spot_price": 215.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 75.0,
-                        "current_price": 202.00,
-                        "performance_pct": -6.05,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 18.95,
-                    },
-                    {
-                        "name": "Amazon.com Inc.",
-                        "ticker": "AMZN US",
-                        "asset_class": "Equity",
-                        "currency": "USD",
-                        "spot_price": 185.00,
-                        "strike_level_pct": 100.0,
-                        "barrier_level_pct": 75.0,
-                        "current_price": 189.50,
-                        "performance_pct": 2.43,
-                        "barrier_hit": False,
-                        "distance_to_barrier_pct": 27.43,
-                    },
-                ],
-                "fees": {
-                    "distribution_fee_pct": 0.50,
-                    "structuring_fee_pct": 0.25,
-                    "management_fee_pct_pa": 0.00,
-                    "exchange_fee_pct": 0.05,
-                    "total_fee_pct": 0.80,
-                    "description": "Short-tenor US dual-equity RC: 50 bps distribution fee, 25 bps structuring fee.",
-                },
-            },
-        }
+    def _load_from_csv(self, csv_file: Path) -> None:
+        """Load RFQs, underlyings, and fees from CSV."""
+        if not csv_file.exists():
+            raise FileNotFoundError(f"Mock dataset CSV not found at: {csv_file}")
+
+        self._rfqs.clear()
+        self._products.clear()
+
+        with open(csv_file, mode="r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rfq_id = row["rfq_id"]
+                product_id = row["product_id"]
+                isin = row["isin"]
+                product_name = row["product_name"]
+                product_type = row["product_type"]
+                basket_type = row.get("basket_type", "Worst-of Basket")
+                status = row["status"]
+                currency = row["currency"]
+                nominal = float(row["nominal"])
+                client = row["client"]
+                created_at = row["created_at"]
+                expires_at = row["expires_at"]
+                traded_with = row["traded_with"] if row.get("traded_with") else None
+                traded_price_pct = (
+                    float(row["traded_price_pct"])
+                    if row.get("traded_price_pct") and row["traded_price_pct"].strip()
+                    else None
+                )
+
+                # Parse quotes
+                quotes_raw = json.loads(row["quotes"]) if row.get("quotes") else []
+                quotes = [
+                    RFQQuote(
+                        issuer=q["issuer"],
+                        price_pct=float(q["price_pct"]),
+                        coupon_pct_pa=float(q["coupon_pct_pa"]),
+                        timestamp=q["timestamp"],
+                        valid_until=q["valid_until"],
+                    )
+                    for q in quotes_raw
+                ]
+
+                # Best quote
+                best_quote = None
+                if row.get("best_quote") and row["best_quote"].strip():
+                    bq_data = json.loads(row["best_quote"])
+                    best_quote = RFQQuote(
+                        issuer=bq_data["issuer"],
+                        price_pct=float(bq_data["price_pct"]),
+                        coupon_pct_pa=float(bq_data["coupon_pct_pa"]),
+                        timestamp=bq_data["timestamp"],
+                        valid_until=bq_data["valid_until"],
+                    )
+
+                # Parse underlyings
+                underlyings_raw = json.loads(row["underlyings"]) if row.get("underlyings") else []
+                underlying_objs = []
+                underlying_tickers = []
+                for u in underlyings_raw:
+                    u_obj = Underlying(
+                        name=u["name"],
+                        ticker=u["ticker"],
+                        asset_class=u["asset_class"],
+                        currency=u["currency"],
+                        spot_price=float(u["spot_price"]),
+                        strike_level_pct=float(u["strike_level_pct"]),
+                        barrier_level_pct=(
+                            float(u["barrier_level_pct"])
+                            if u.get("barrier_level_pct") is not None
+                            else None
+                        ),
+                        current_price=float(u["current_price"]),
+                        performance_pct=float(u["performance_pct"]),
+                        barrier_hit=bool(u.get("barrier_hit", False)),
+                        distance_to_barrier_pct=(
+                            float(u["distance_to_barrier_pct"])
+                            if u.get("distance_to_barrier_pct") is not None
+                            else None
+                        ),
+                    )
+                    underlying_objs.append(u_obj)
+                    underlying_tickers.append(u["ticker"])
+
+                # Parse fees
+                dist_fee = float(row.get("distribution_fee_pct", 0.0))
+                struct_fee = float(row.get("structuring_fee_pct", 0.0))
+                mgmt_fee = float(row.get("management_fee_pct_pa", 0.0))
+                exch_fee = float(row.get("exchange_fee_pct", 0.0))
+                total_fee = float(row.get("total_fee_pct", dist_fee + struct_fee + mgmt_fee + exch_fee))
+                fee_desc = row.get("fee_description", "")
+
+                fees_dict = {
+                    "distribution_fee_pct": dist_fee,
+                    "structuring_fee_pct": struct_fee,
+                    "management_fee_pct_pa": mgmt_fee,
+                    "exchange_fee_pct": exch_fee,
+                    "total_fee_pct": total_fee,
+                    "description": fee_desc,
+                }
+
+                rfq_dict = {
+                    "rfq_id": rfq_id,
+                    "product_id": product_id,
+                    "isin": isin,
+                    "product_name": product_name,
+                    "product_type": product_type,
+                    "status": status,
+                    "currency": currency,
+                    "nominal": nominal,
+                    "client": client,
+                    "underlyings": underlying_tickers,
+                    "quotes": [q.model_dump() for q in quotes],
+                    "best_quote": best_quote.model_dump() if best_quote else None,
+                    "traded_with": traded_with,
+                    "traded_price_pct": traded_price_pct,
+                    "created_at": created_at,
+                    "expires_at": expires_at,
+                }
+                self._rfqs.append(rfq_dict)
+
+                self._products[product_id] = {
+                    "rfq_id": rfq_id,
+                    "product_id": product_id,
+                    "isin": isin,
+                    "product_name": product_name,
+                    "product_type": product_type,
+                    "basket_type": basket_type,
+                    "currency": currency,
+                    "nominal": nominal,
+                    "underlyings": [u.model_dump() for u in underlying_objs],
+                    "fees": fees_dict,
+                }
 
     def _resolve_product_id(self, identifier: str) -> str | None:
         """Resolve a product ID from product_id, isin, or rfq_id."""
         clean = identifier.strip().upper()
 
-        # Direct match in products
         if clean in self._products:
             return clean
 
-        # Check ISIN
         for pid, data in self._products.items():
             if data.get("isin", "").upper() == clean:
                 return pid
 
-        # Check RFQ ID
         for rfq in self._rfqs:
-            if rfq["rfq_id"].upper() == clean:
-                return rfq["product_id"]
-            if rfq.get("isin", "").upper() == clean:
+            if rfq["rfq_id"].upper() == clean or rfq.get("isin", "").upper() == clean:
                 return rfq["product_id"]
 
-        # Substring / fuzzy matching if applicable (e.g. "101", "PRD101")
         for pid in self._products:
             if clean in pid:
                 return pid
@@ -460,17 +185,21 @@ class SLDService:
         issuer: str | None = None,
         product_type: str | None = None,
         currency: str | None = None,
+        client: str | None = None,
         limit: int = 10,
+        offset: int = 0,
     ) -> list[RFQ]:
-        """Fetch RFQs matching specified filters.
+        """Fetch RFQs matching specified filter criteria.
 
         Args:
-            rfq_id: Filter by exact or partial RFQ ID (e.g. 'RFQ-101')
+            rfq_id: Filter by exact or partial RFQ ID, ISIN, or product ID
             status: Filter by status ('open', 'quoted', 'traded', 'expired', 'rejected')
             issuer: Filter by quoted or traded issuer (e.g. 'ZKB', 'UBS', 'Vontobel', 'BNP Paribas')
             product_type: Filter by product structure type
             currency: Filter by currency (e.g. 'CHF', 'USD', 'EUR')
+            client: Filter by client name
             limit: Maximum number of RFQs to return
+            offset: Number of RFQs to skip
         """
         results: list[dict[str, Any]] = self._rfqs
 
@@ -495,21 +224,26 @@ class SLDService:
             pt_clean = product_type.strip().lower()
             results = [r for r in results if pt_clean in r["product_type"].lower()]
 
+        if client:
+            client_clean = client.strip().lower()
+            results = [r for r in results if client_clean in r["client"].lower()]
+
         if issuer:
             iss_clean = issuer.strip().lower()
             filtered = []
             for r in results:
-                # check traded_with
                 if r.get("traded_with") and iss_clean in r["traded_with"].lower():
                     filtered.append(r)
                     continue
-                # check quotes
                 quote_issuers = [q["issuer"].lower() for q in r.get("quotes", [])]
                 if any(iss_clean in qi for qi in quote_issuers):
                     filtered.append(r)
             results = filtered
 
-        return [RFQ(**r) for r in results[:limit]]
+        paginated = results[offset : offset + limit] if limit else results[offset:]
+        return [RFQ(**r) for r in paginated]
+
+    get_rfq = get_rfqs
 
     def get_underlyings_of_product(self, product_id: str) -> ProductUnderlyingsResponse:
         """Fetch underlying assets and parameters for a specific product or RFQ.
@@ -531,6 +265,8 @@ class SLDService:
             basket_type=pdata["basket_type"],
             underlyings=underlying_objs,
         )
+
+    get_underlyings_ofproducts = get_underlyings_of_product
 
     def get_fees_of_product(
         self, product_id: str, fee_type: str | None = None

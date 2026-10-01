@@ -13,14 +13,16 @@ router = APIRouter(prefix="/api/sld", tags=["sld"])
 
 @router.get("/rfqs", response_model=list[RFQ])
 def get_rfqs(
-    rfq_id: str | None = Query(None, description="Filter by RFQ ID or ISIN"),
+    rfq_id: str | None = Query(None, description="Filter by RFQ ID, ISIN, or product ID"),
     status: Literal["open", "quoted", "traded", "expired", "rejected"] | None = Query(
         None, description="Status filter"
     ),
     issuer: str | None = Query(None, description="Filter by issuer or quote provider"),
     product_type: str | None = Query(None, description="Filter by structured product type"),
     currency: str | None = Query(None, description="Filter by currency (e.g. CHF, USD, EUR)"),
-    limit: int = Query(10, ge=1, le=50, description="Max number of items to return"),
+    client: str | None = Query(None, description="Filter by client name"),
+    limit: int = Query(10, ge=1, le=100, description="Max number of items to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
 ) -> list[RFQ]:
     """Fetch structured product RFQs from SLD."""
     return sld_service.get_rfqs(
@@ -29,7 +31,9 @@ def get_rfqs(
         issuer=issuer,
         product_type=product_type,
         currency=currency,
+        client=client,
         limit=limit,
+        offset=offset,
     )
 
 

@@ -83,15 +83,25 @@ curl http://127.0.0.1:8000/api/chat/modes
 
 ## Integrated SLD Tools & REST Endpoints
 
-1. **`get_rfqs(rfq_id, status, issuer, product_type, currency, limit)`**
+1. **`get_rfqs(rfq_id, status, issuer, product_type, currency, client, limit, offset)`**
    - REST: `GET /api/sld/rfqs`
-   - Filters RFQs by ID, status (`open`, `quoted`, `traded`, `expired`, `rejected`), currency, product structure, or issuer quote.
+   - Filters RFQs by ID/ISIN/product ID, status (`open`, `quoted`, `traded`, `expired`, `rejected`), currency, product structure, client, or issuer quote.
 2. **`get_underlyings_of_product(product_id)`**
    - REST: `GET /api/sld/products/{product_id}/underlyings` (or `GET /api/sld/underlyings?product_id=...`)
    - Returns underlying basket constituents, spots, current prices, strikes, barrier levels, and breach checks. Supports Product ID, ISIN, or RFQ ID.
 3. **`get_fees_of_product(product_id, fee_type)`**
    - REST: `GET /api/sld/products/{product_id}/fees` (or `GET /api/sld/fees?product_id=...`)
-   - Returns structured product fee schedules (distribution fee, structuring fee, recurring management fee, exchange fee, monetary amounts).
+   - Returns structured product fee schedules (distribution fee, structuring fee, recurring management fee, exchange fee, total fee %, monetary amounts). Supports Product ID, ISIN, or RFQ ID.
+
+---
+
+## Mock Dataset (CSV)
+
+The mock dataset provides **100 plausible structured product RFQs** loaded from CSV:
+- **Master Dataset**: `app/data/rfq_products.csv` (100 RFQ products with attributes, multi-quote issuer pricing, underlyings, and fee schedules)
+- **Normalized Datasets**: `app/data/underlyings.csv` (all constituent assets) and `app/data/fees.csv` (fee schedules)
+- **Data Generator**: `scripts/generate_mock_dataset.py` reproduces the dataset with deterministic attributes, realistic Swiss/US/European equities and indices, diverse product structures (BRCs, Autocallables, Capital Protection, Reverse Convertibles, etc.), and multi-issuer pricing quotes.
+- `SLDService` parses the CSV on startup and exposes `get_rfqs`, `get_underlyings_of_product`, and `get_fees_of_product` with filter criteria.
 
 ---
 

@@ -102,6 +102,7 @@ INSTRUCTIONS:
 
 TOOL_RUNNERS = {
     "get_rfqs": lambda args: [r.model_dump() for r in sld_service.get_rfqs(**args)],
+    "get_products": lambda args: [p.model_dump() for p in sld_service.get_products(**args)],
     "get_underlyings_of_product": lambda args: sld_service.get_underlyings_of_product(**args).model_dump(),
     "get_fees_of_product": lambda args: sld_service.get_fees_of_product(**args).model_dump(),
 }

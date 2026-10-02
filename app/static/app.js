@@ -48,7 +48,7 @@ function hideEmptyState() {
   }
 }
 
-function addMessage(role, content, extraClass = "") {
+function addMessage(role, content, extraClass = "", iterations = null, toolCalls = null) {
   hideEmptyState();
 
   const row = document.createElement("div");
@@ -60,7 +60,124 @@ function addMessage(role, content, extraClass = "") {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = content;
+
+  // If there are iterations or tool calls recorded for assistant, display thought & iteration trace
+  const hasIterations = Array.isArray(iterations) && iterations.length > 0;
+  const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
+
+  if (role === "assistant" && (hasIterations || hasToolCalls)) {
+    const traceWrap = document.createElement("div");
+    traceWrap.className = "trace-container";
+
+    const details = document.createElement("details");
+    details.className = "trace-details";
+
+    const summary = document.createElement("summary");
+    summary.className = "trace-summary";
+
+    const totalSteps = hasIterations ? iterations.length : 1;
+    const totalTools = hasToolCalls ? toolCalls.length : (hasIterations ? iterations.reduce((acc, it) => acc + (it.tool_calls ? it.tool_calls.length : 0), 0) : 0);
+
+    const summaryLeft = document.createElement("span");
+    summaryLeft.className = "trace-summary-left";
+    summaryLeft.innerHTML = `<span>🧠 Agent Reasoning & Tools</span> <span class="trace-badge">${totalSteps} iteration${totalSteps > 1 ? "s" : ""} · ${totalTools} tool call${totalTools !== 1 ? "s" : ""}</span>`;
+
+    summary.appendChild(summaryLeft);
+    details.appendChild(summary);
+
+    const contentEl = document.createElement("div");
+    contentEl.className = "trace-content";
+
+    if (hasIterations) {
+      iterations.forEach((step) => {
+        const iterCard = document.createElement("div");
+        iterCard.className = "iteration-card";
+
+        const iterHeader = document.createElement("div");
+        iterHeader.className = "iteration-header";
+        iterHeader.textContent = `Iteration ${step.iteration}`;
+        iterCard.appendChild(iterHeader);
+
+        if (step.thought) {
+          const thoughtBox = document.createElement("div");
+          thoughtBox.className = "thought-box";
+          const thoughtLabel = document.createElement("div");
+          thoughtLabel.className = "thought-label";
+          thoughtLabel.textContent = "Thought";
+          thoughtBox.appendChild(thoughtLabel);
+          const thoughtText = document.createElement("div");
+          thoughtText.textContent = step.thought;
+          thoughtBox.appendChild(thoughtText);
+          iterCard.appendChild(thoughtBox);
+        }
+
+        if (step.tool_calls && step.tool_calls.length > 0) {
+          const toolsList = document.createElement("div");
+          toolsList.className = "tool-calls-list";
+          step.tool_calls.forEach((tc) => {
+            const toolItem = document.createElement("div");
+            toolItem.className = "tool-item";
+
+            const th = document.createElement("div");
+            th.className = "tool-item-header";
+            th.innerHTML = `<span>⚡ ${tc.tool}()</span>`;
+
+            const statusSpan = document.createElement("span");
+            statusSpan.className = `tool-item-status ${tc.error ? "tool-status-error" : "tool-status-success"}`;
+            statusSpan.textContent = tc.error ? "Failed" : "Success";
+            th.appendChild(statusSpan);
+            toolItem.appendChild(th);
+
+            const jsonPreview = document.createElement("div");
+            jsonPreview.className = "tool-json-preview";
+            const previewData = {
+              args: tc.parameters,
+              summary: tc.summary,
+            };
+            if (tc.error) previewData.error = tc.error;
+            if (tc.result) previewData.result = tc.result;
+            jsonPreview.textContent = JSON.stringify(previewData, null, 2);
+            toolItem.appendChild(jsonPreview);
+
+            toolsList.appendChild(toolItem);
+          });
+          iterCard.appendChild(toolsList);
+        }
+
+        contentEl.appendChild(iterCard);
+      });
+    } else if (hasToolCalls) {
+      // Fallback for standalone tool_calls
+      const toolsList = document.createElement("div");
+      toolsList.className = "tool-calls-list";
+      toolCalls.forEach((tc) => {
+        const toolItem = document.createElement("div");
+        toolItem.className = "tool-item";
+
+        const th = document.createElement("div");
+        th.className = "tool-item-header";
+        th.innerHTML = `<span>⚡ ${tc.tool}()</span>`;
+        toolItem.appendChild(th);
+
+        const jsonPreview = document.createElement("div");
+        jsonPreview.className = "tool-json-preview";
+        jsonPreview.textContent = JSON.stringify({ args: tc.parameters, summary: tc.summary }, null, 2);
+        toolItem.appendChild(jsonPreview);
+
+        toolsList.appendChild(toolItem);
+      });
+      contentEl.appendChild(toolsList);
+    }
+
+    details.appendChild(contentEl);
+    traceWrap.appendChild(details);
+    bubble.appendChild(traceWrap);
+  }
+
+  const replyEl = document.createElement("div");
+  replyEl.className = "reply-text";
+  replyEl.textContent = content;
+  bubble.appendChild(replyEl);
 
   row.appendChild(avatar);
   row.appendChild(bubble);
@@ -136,7 +253,7 @@ async function sendMessage(text) {
 
     const data = await response.json();
     hideTyping();
-    addMessage("assistant", data.reply);
+    addMessage("assistant", data.reply, "", data.iterations, data.tool_calls);
     chatHistory.push({ role: "assistant", content: data.reply });
     if (data.model) {
       updateModelLabels(data.model);

@@ -13,6 +13,14 @@ class ToolCallRecord(BaseModel):
     tool: str
     parameters: dict[str, Any] = Field(default_factory=dict)
     summary: str | None = None
+    result: Any | None = None
+    error: str | None = None
+
+
+class IterationStep(BaseModel):
+    iteration: int
+    thought: str | None = None
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
 
 
 class ChatRequest(BaseModel):
@@ -29,4 +37,5 @@ class ChatResponse(BaseModel):
     reply: str
     model: str = Field(..., examples=["sld-assistant-dummy-v1", "gemini-3.8-flash"])
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    iterations: list[IterationStep] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

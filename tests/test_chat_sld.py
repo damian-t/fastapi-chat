@@ -83,6 +83,9 @@ def test_chat_multi_tool():
     assert "get_fees_of_product" in tool_names
     assert "ABBN SW" in data["reply"]
     assert "Distribution Fee" in data["reply"]
+    assert "iterations" in data
+    assert len(data["iterations"]) >= 1
+    assert data["iterations"][0]["thought"] is not None
 
 
 def test_chat_context_carryover():

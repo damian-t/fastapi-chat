@@ -335,7 +335,9 @@ class MockLLMClient(BaseLLMClient):
         )
 
         if next_calls:
-            return LLMResponse(content=None, tool_calls=next_calls)
+            call_names = ", ".join(c.name for c in next_calls)
+            thought_desc = f"Identified intent requiring external data. Planning call to: {call_names}."
+            return LLMResponse(content=thought_desc, tool_calls=next_calls)
 
         # Fallback interpretation if no more tool calls can be planned
         return self._interpret_tool_results(executed_tools, user_message)

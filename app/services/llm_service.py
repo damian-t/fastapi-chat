@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Any
-from app.models.chat import ChatMessage, ToolCallRecord
+from app.models.chat import ChatMessage, ToolCallRecord, IterationStep
 from app.services.llm_client import (
     BaseLLMClient,
     MockLLMClient,
@@ -130,7 +130,8 @@ class LLMService:
         self,
         message: str,
         history: list[ChatMessage] | None = None,
-    ) -> tuple[str, list[ToolCallRecord]]:
+        return_iterations: bool = False,
+    ) -> tuple[str, list[ToolCallRecord]] | tuple[str, list[ToolCallRecord], list[IterationStep]]:
         is_prompt_only = getattr(self.llm_client, "is_prompt_only", False)
 
         # 1. Prepare initial conversation
@@ -157,6 +158,7 @@ class LLMService:
         messages.append({"role": "user", "content": message.strip()})
 
         records: list[ToolCallRecord] = []
+        iteration_steps: list[IterationStep] = []
         iteration = 0
 
         # Iterative loop: continue until LLM deems results sufficient or max_iterations reached
@@ -181,9 +183,14 @@ class LLMService:
                 if header_blocks and not final_content.startswith("🔧"):
                     final_content = f"{header_blocks[0]}\n---\n\n{final_content}"
 
+                if return_iterations:
+                    return final_content, records, iteration_steps
                 return final_content, records
 
             # The LLM instructed the backend to call one or more tools
+            current_step_tools: list[ToolCallRecord] = []
+            thought_text = llm_decision.content or None
+
             if is_prompt_only:
                 messages.append({
                     "role": "assistant",
@@ -194,15 +201,16 @@ class LLMService:
                 for tc in llm_decision.tool_calls:
                     runner = TOOL_RUNNERS.get(tc.name)
                     if not runner:
-                        err_msg = {"error": f"Tool '{tc.name}' not found"}
+                        err_msg = f"Tool '{tc.name}' not found"
                         tool_results_texts.append(f"- Tool: {tc.name}\n  Error: Tool not found")
-                        records.append(
-                            ToolCallRecord(
-                                tool=tc.name,
-                                parameters=tc.arguments,
-                                summary=f"Tool '{tc.name}' not found",
-                            )
+                        record = ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Tool '{tc.name}' not found",
+                            error=err_msg,
                         )
+                        records.append(record)
+                        current_step_tools.append(record)
                         continue
 
                     try:
@@ -212,26 +220,36 @@ class LLMService:
                             f"  Arguments: {json.dumps(tc.arguments)}\n"
                             f"  Result: {json.dumps(tool_output)}"
                         )
-                        records.append(
-                            ToolCallRecord(
-                                tool=tc.name,
-                                parameters=tc.arguments,
-                                summary=f"Executed {tc.name}",
-                            )
+                        record = ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Executed {tc.name}",
+                            result=tool_output,
                         )
+                        records.append(record)
+                        current_step_tools.append(record)
                     except Exception as exc:
                         tool_results_texts.append(
                             f"- Tool: {tc.name}\n"
                             f"  Arguments: {json.dumps(tc.arguments)}\n"
                             f"  Error: {str(exc)}"
                         )
-                        records.append(
-                            ToolCallRecord(
-                                tool=tc.name,
-                                parameters=tc.arguments,
-                                summary=f"Failed: {exc}",
-                            )
+                        record = ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Failed: {exc}",
+                            error=str(exc),
                         )
+                        records.append(record)
+                        current_step_tools.append(record)
+
+                iteration_steps.append(
+                    IterationStep(
+                        iteration=iteration,
+                        thought=thought_text,
+                        tool_calls=current_step_tools,
+                    )
+                )
 
                 # Return results back to the LLM together with the user query
                 messages.append({
@@ -258,28 +276,46 @@ class LLMService:
                     if not runner:
                         err_msg = {"error": f"Tool '{tc.name}' not found"}
                         messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_msg)})
+                        record = ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Tool '{tc.name}' not found",
+                            error=str(err_msg),
+                        )
+                        records.append(record)
+                        current_step_tools.append(record)
                         continue
 
                     try:
                         tool_output = runner(tc.arguments)
                         messages.append({"role": "tool", "name": tc.name, "content": json.dumps(tool_output)})
-                        records.append(
-                            ToolCallRecord(
-                                tool=tc.name,
-                                parameters=tc.arguments,
-                                summary=f"Executed {tc.name}",
-                            )
+                        record = ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Executed {tc.name}",
+                            result=tool_output,
                         )
+                        records.append(record)
+                        current_step_tools.append(record)
                     except Exception as exc:
                         err_output = {"error": str(exc)}
                         messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_output)})
-                        records.append(
-                            ToolCallRecord(
-                                tool=tc.name,
-                                parameters=tc.arguments,
-                                summary=f"Failed: {exc}",
-                            )
+                        record = ToolCallRecord(
+                            tool=tc.name,
+                            parameters=tc.arguments,
+                            summary=f"Failed: {exc}",
+                            error=str(exc),
                         )
+                        records.append(record)
+                        current_step_tools.append(record)
+
+                iteration_steps.append(
+                    IterationStep(
+                        iteration=iteration,
+                        thought=thought_text,
+                        tool_calls=current_step_tools,
+                    )
+                )
 
         # Fallback interpretation if max iterations reached
         if is_prompt_only:
@@ -294,14 +330,17 @@ class LLMService:
         else:
             fallback_response = await self.llm_client.query(messages=messages, tools=None)
 
-        return fallback_response.content or "Completed with maximum iterations reached.", records
+        fallback_text = fallback_response.content or "Completed with maximum iterations reached."
+        if return_iterations:
+            return fallback_text, records, iteration_steps
+        return fallback_text, records
 
     async def generate_reply(
         self,
         message: str,
         history: list[ChatMessage] | None = None,
     ) -> str:
-        reply, _ = await self.execute_and_interpret(message=message, history=history)
+        reply, _, _ = await self.execute_and_interpret(message=message, history=history)
         return reply
 
 

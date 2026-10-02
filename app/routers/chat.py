@@ -40,14 +40,16 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     """Process a chat inquiry with the selected LLM mode (mock or gemini)."""
     try:
         service = get_llm_service(payload.mode)
-        reply, tool_calls = await service.execute_and_interpret(
+        reply, tool_calls, iterations = await service.execute_and_interpret(
             message=payload.message,
             history=payload.history,
+            return_iterations=True,
         )
         return ChatResponse(
             reply=reply,
             model=service.model_name,
             tool_calls=tool_calls,
+            iterations=iterations,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

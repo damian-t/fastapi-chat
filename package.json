@@ -1,0 +1,14 @@
+{
+  "name": "fastapi-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FastAPI chatbot with SLD structured products tools, thought tracing, markdown tables, and mermaid charts",
+  "scripts": {
+    "vendor": "node scripts/vendor.js"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.4",
+    "marked": "^15.0.7",
+    "mermaid": "^11.4.1"
+  }
+}

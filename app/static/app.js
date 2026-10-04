@@ -42,6 +42,125 @@ function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+let mermaidInitialized = false;
+function initMermaid() {
+  if (window.mermaid && !mermaidInitialized) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "dark",
+      securityLevel: "loose",
+      fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+      themeVariables: {
+        darkMode: true,
+        background: "#171717",
+        primaryColor: "#10a37f",
+        primaryTextColor: "#ececec",
+        primaryBorderColor: "#2f2f2f",
+        lineColor: "#10a37f",
+        secondaryColor: "#2a2a2a",
+        tertiaryColor: "#212121",
+        pie1: "#10a37f",
+        pie2: "#3b82f6",
+        pie3: "#f59e0b",
+        pie4: "#ec4899",
+        pie5: "#8b5cf6",
+        pie6: "#06b6d4",
+        pie7: "#10b981",
+        pie8: "#6366f1",
+      },
+    });
+    mermaidInitialized = true;
+  }
+}
+
+if (typeof marked !== "undefined") {
+  marked.setOptions({
+    gfm: true,
+    breaks: true,
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function wrapTables(container) {
+  const tables = container.querySelectorAll("table");
+  tables.forEach((table) => {
+    if (!table.parentElement.classList.contains("table-container")) {
+      const wrap = document.createElement("div");
+      wrap.className = "table-container";
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
+    }
+  });
+}
+
+let mermaidIdCounter = 0;
+async function renderMermaidInElement(container) {
+  initMermaid();
+  if (!window.mermaid) return;
+
+  const mermaidKeywords = /^\s*(pie|graph|flowchart|sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|gitGraph|mindmap|timeline|quadrantChart|xychart|sankey-beta|kanban|block-beta)\b/m;
+
+  // Convert pre/code blocks containing mermaid
+  const preElements = container.querySelectorAll("pre");
+  preElements.forEach((pre) => {
+    const codeEl = pre.querySelector("code");
+    const text = (codeEl ? codeEl.textContent : pre.textContent).trim();
+    const isMermaid = pre.classList.contains("language-mermaid") ||
+                      (codeEl && (codeEl.classList.contains("language-mermaid") || codeEl.classList.contains("mermaid"))) ||
+                      mermaidKeywords.test(text);
+
+    if (isMermaid) {
+      const wrap = document.createElement("div");
+      wrap.className = "mermaid-wrap";
+      const div = document.createElement("div");
+      div.className = "mermaid-block";
+      div.setAttribute("data-mermaid-code", text);
+      wrap.appendChild(div);
+      pre.replaceWith(wrap);
+    }
+  });
+
+  // Convert standalone paragraphs containing unfenced mermaid
+  const pElements = container.querySelectorAll("p");
+  pElements.forEach((p) => {
+    const text = p.textContent.trim();
+    if (mermaidKeywords.test(text) && text.split("\n").length >= 2) {
+      const wrap = document.createElement("div");
+      wrap.className = "mermaid-wrap";
+      const div = document.createElement("div");
+      div.className = "mermaid-block";
+      div.setAttribute("data-mermaid-code", text);
+      wrap.appendChild(div);
+      p.replaceWith(wrap);
+    }
+  });
+
+  // Render each mermaid block
+  const mermaidBlocks = container.querySelectorAll(".mermaid-block");
+  for (const block of mermaidBlocks) {
+    const code = block.getAttribute("data-mermaid-code");
+    if (!code) continue;
+    const renderId = `mermaid-${Date.now()}-${++mermaidIdCounter}`;
+    try {
+      const { svg } = await mermaid.render(renderId, code);
+      block.innerHTML = svg;
+    } catch (err) {
+      console.warn("Mermaid diagram rendering error:", err);
+      const strayErr = document.getElementById(`d${renderId}`);
+      if (strayErr) strayErr.remove();
+
+      block.innerHTML = `<pre><code>${escapeHtml(code)}</code></pre><div class="mermaid-error">⚠️ Diagram render error: ${escapeHtml(err.message || "Invalid syntax")}</div>`;
+    }
+  }
+
+  scrollToBottom();
+}
+
 function hideEmptyState() {
   if (emptyStateEl && emptyStateEl.parentNode) {
     emptyStateEl.remove();
@@ -176,7 +295,26 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
 
   const replyEl = document.createElement("div");
   replyEl.className = "reply-text";
-  replyEl.textContent = content;
+
+  if (role === "assistant") {
+    let html = "";
+    if (typeof marked !== "undefined" && typeof marked.parse === "function") {
+      html = marked.parse(content);
+    } else {
+      html = `<p>${escapeHtml(content)}</p>`;
+    }
+
+    if (typeof DOMPurify !== "undefined" && typeof DOMPurify.sanitize === "function") {
+      html = DOMPurify.sanitize(html);
+    }
+
+    replyEl.innerHTML = html;
+    wrapTables(replyEl);
+    renderMermaidInElement(replyEl);
+  } else {
+    replyEl.textContent = content;
+  }
+
   bubble.appendChild(replyEl);
 
   row.appendChild(avatar);

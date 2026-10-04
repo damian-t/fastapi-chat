@@ -86,6 +86,45 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function preprocessMarkdown(content) {
+  if (!content || typeof content !== "string") return content;
+
+  let text = content;
+
+  // 1. Normalize triple single quotes to triple backticks (e.g. ''' mermaid -> ```mermaid)
+  text = text.replace(/'''[^\S\r\n]*([a-zA-Z0-9_-]*)/g, (match, lang) => {
+    return "```" + (lang ? lang : "");
+  });
+
+  // 2. Normalize space in ``` mermaid -> ```mermaid
+  text = text.replace(/```[^\S\r\n]+mermaid/gi, "```mermaid");
+
+  const diagramKeywords = "(?:pie|graph|flowchart|sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|gitGraph|mindmap|timeline|quadrantChart|xychart|sankey-beta|kanban|block-beta)";
+
+  // 3. Separate diagram keywords if they appear on the same line as ```mermaid
+  // e.g. ```mermaid pie title ... -> ```mermaid\npie title ...
+  const sameLineRegex = new RegExp("```mermaid[^\\S\\r\\n]+(" + diagramKeywords + "\\b[^\\n]*)", "gi");
+  text = text.replace(sameLineRegex, "```mermaid\n$1");
+
+  // 4. If code fence has no "mermaid" but starts with diagram keyword (e.g. ```pie title ...)
+  const noMermaidRegex = new RegExp("```(?:[^\\S\\r\\n]*\\n\\s*|[^\\S\\r\\n]*)(" + diagramKeywords + "\\b[^\\n]*)", "gi");
+  text = text.replace(noMermaidRegex, "```mermaid\n$1");
+
+  // 5. If no backticks in string, but contains an unfenced diagram keyword at start of line:
+  if (!text.includes("```")) {
+    const unfencedRegex = new RegExp("(^|\\n)(" + diagramKeywords + "\\b[\\s\\S]*?$)", "i");
+    const match = text.match(unfencedRegex);
+    if (match) {
+      const startIdx = match.index + match[1].length;
+      const before = text.slice(0, startIdx);
+      const diagram = text.slice(startIdx).trim();
+      text = before + "\n```mermaid\n" + diagram + "\n```";
+    }
+  }
+
+  return text;
+}
+
 function wrapTables(container) {
   const tables = container.querySelectorAll("table");
   tables.forEach((table) => {
@@ -297,11 +336,12 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
   replyEl.className = "reply-text";
 
   if (role === "assistant") {
+    const processedContent = preprocessMarkdown(content);
     let html = "";
     if (typeof marked !== "undefined" && typeof marked.parse === "function") {
-      html = marked.parse(content);
+      html = marked.parse(processedContent);
     } else {
-      html = `<p>${escapeHtml(content)}</p>`;
+      html = `<p>${escapeHtml(processedContent)}</p>`;
     }
 
     if (typeof DOMPurify !== "undefined" && typeof DOMPurify.sanitize === "function") {

@@ -186,14 +186,19 @@ async function renderMermaidInElement(container) {
     if (!code) continue;
     const renderId = `mermaid-${Date.now()}-${++mermaidIdCounter}`;
     try {
-      const { svg } = await mermaid.render(renderId, code);
+      const { svg } = await mermaid.render(renderId, code, block);
       block.innerHTML = svg;
     } catch (err) {
-      console.warn("Mermaid diagram rendering error:", err);
-      const strayErr = document.getElementById(`d${renderId}`);
-      if (strayErr) strayErr.remove();
+      try {
+        const { svg } = await mermaid.render(renderId, code);
+        block.innerHTML = svg;
+      } catch (err2) {
+        console.warn("Mermaid diagram rendering error:", err2 || err);
+        const strayErr = document.getElementById(`d${renderId}`);
+        if (strayErr) strayErr.remove();
 
-      block.innerHTML = `<pre><code>${escapeHtml(code)}</code></pre><div class="mermaid-error">⚠️ Diagram render error: ${escapeHtml(err.message || "Invalid syntax")}</div>`;
+        block.innerHTML = `<pre><code>${escapeHtml(code)}</code></pre><div class="mermaid-error">⚠️ Diagram render error: ${escapeHtml((err2 && err2.message) || (err && err.message) || "Invalid syntax")}</div>`;
+      }
     }
   }
 
@@ -350,7 +355,6 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
 
     replyEl.innerHTML = html;
     wrapTables(replyEl);
-    renderMermaidInElement(replyEl);
   } else {
     replyEl.textContent = content;
   }
@@ -361,6 +365,11 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
   row.appendChild(bubble);
   messagesEl.appendChild(row);
   scrollToBottom();
+
+  if (role === "assistant") {
+    renderMermaidInElement(replyEl);
+  }
+
   return row;
 }
 

@@ -633,20 +633,21 @@ code {
   background: #171717;
   border: 1px solid var(--panel-border);
   border-radius: 0.65rem;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  text-align: center;
   overflow-x: auto;
   box-sizing: border-box;
 }
 
 .reply-text .mermaid-block {
+  display: block;
   width: 100%;
-  display: flex;
-  justify-content: center;
+  max-width: 100%;
+  margin: 0 auto;
 }
 
 .reply-text .mermaid-block svg {
+  display: block;
+  margin: 0 auto;
   max-width: 100%;
   height: auto;
 }

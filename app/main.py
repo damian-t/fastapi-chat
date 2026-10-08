@@ -6,8 +6,8 @@ from fastapi.staticfiles import StaticFiles
 from app.routers import chat, items, sld
 
 app = FastAPI(
-    title="SLD Structured Products Chatbot & API",
-    description="FastAPI chatbot and mock REST APIs for SLD RFQ distribution and structured products pricing.",
+    title="IH Trading Data Chatbot",
+    description="FastAPI service and chatbot for IH trading data (currently powered by SLD data).",
     version="1.0.0",
 )
 app.include_router(items.router)

@@ -1,6 +1,6 @@
-# SLD Structured Products Chatbot & REST API
+# IH Trading Data Chatbot & REST API
 
-FastAPI chatbot and mock REST tools for **SLD**, an application that distributes and answers Requests for Quotes (RFQs) for structured products.
+FastAPI chatbot and mock REST tools for **IH Trading Data Chatbot**, currently distributing and answering Requests for Quotes (RFQs), underlying basket performance, and fee schedules for structured products using SLD data.
 
 The API supports **two execution modes**:
 1. **Mock LLM (`mock`)**: Fast, deterministic local simulated agent with multi-turn iterative reasoning.

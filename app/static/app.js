@@ -18,7 +18,8 @@ async function loadModes() {
       const data = await res.json();
       if (data.default_mode && modeSelectEl) {
         modeSelectEl.value = data.default_mode;
-        updateModelLabels(data.default_mode === "gemini" ? "gemini-3.8-flash" : "mock-sld-llm-v2");
+        const isGem = data.default_mode.startsWith("gemini");
+        updateModelLabels(isGem ? "gemini-3.8-flash" : "mock-sld-llm-v2");
       }
     }
   } catch (err) {
@@ -33,8 +34,8 @@ function updateModelLabels(modelName) {
 
 if (modeSelectEl) {
   modeSelectEl.addEventListener("change", () => {
-    const isGemini = modeSelectEl.value === "gemini";
-    updateModelLabels(isGemini ? "gemini-3.8-flash" : "mock-sld-llm-v2");
+    const isGem = modeSelectEl.value.startsWith("gemini");
+    updateModelLabels(isGem ? "gemini-3.8-flash" : "mock-sld-llm-v2");
   });
 }
 

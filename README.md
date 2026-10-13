@@ -2,9 +2,10 @@
 
 FastAPI chatbot and mock REST tools for **IH Trading Data Chatbot**, currently distributing and answering Requests for Quotes (RFQs), underlying basket performance, and fee schedules for structured products using SLD data.
 
-The API supports **two execution modes**:
+The API supports **three execution modes**:
 1. **Mock LLM (`mock`)**: Fast, deterministic local simulated agent with multi-turn iterative reasoning.
-2. **Gemini 3.8 Flash (`gemini`)**: Real LLM interaction powered by Google Gemini 3.8 Flash (`gemini-3.8-flash`) using prompt-based tool reasoning (no function-calling API, descriptions in context, multi-turn iteration).
+2. **Gemini 3.8 Flash Native Tools (`gemini-native`)**: Native API function-calling powered by Google Gemini 3.8 Flash (`gemini-3.8-flash`) using standard `tools` parameter and preserving thought signatures across turns.
+3. **Gemini 3.8 Flash Prompt Mode (`gemini`)**: Real LLM interaction powered by Google Gemini 3.8 Flash (`gemini-3.8-flash`) using prompt-based tool reasoning (no function-calling API, descriptions in context, multi-turn iteration).
 
 ---
 
@@ -43,7 +44,17 @@ uvicorn app.main:app --reload
 - Deterministic heuristic agent that detects intents, plans sequential tool executions, evaluates sufficiency, and formats financial interpretations.
 - Runs without any API key or external network dependency.
 
-### Mode 2: Gemini 3.8 Flash (`gemini`)
+### Mode 2: Gemini 3.8 Flash Native Tools (`gemini-native`)
+- Model reported: `gemini-3.8-flash`
+- **Native function calling**: Passes standard OpenAI-compatible `tools` specifications to Gemini's API.
+- **Workflow**:
+  1. The API sends `messages` and `tools` to Gemini.
+  2. Gemini emits native function calls (`tool_calls` with IDs and `thought_signature`).
+  3. The backend executes the corresponding function(s) against SLD data.
+  4. The backend sends tool execution results (`role: "tool"`, `tool_call_id`) back to Gemini.
+  5. Gemini evaluates the tool response, making follow-up calls if needed, or generates the final markdown interpretation.
+
+### Mode 3: Gemini 3.8 Flash Prompt Mode (`gemini`)
 - Model reported: `gemini-3.8-flash`
 - **Prompt-only tool calling**: The LLM interacts strictly through prompt context containing descriptions of the 3 SLD tools.
 - **Workflow**:

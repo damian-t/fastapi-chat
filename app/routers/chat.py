@@ -25,8 +25,15 @@ def get_chat_modes() -> dict[str, Any]:
                 "configured": True,
             },
             {
+                "id": "gemini-native",
+                "name": "Gemini 3.8 Flash (Native Tools)",
+                "model": "gemini-3.8-flash",
+                "description": "Google Gemini 3.8 Flash with native API function calling",
+                "configured": has_gemini_key,
+            },
+            {
                 "id": "gemini",
-                "name": "Gemini 3.8 Flash",
+                "name": "Gemini 3.8 Flash (Prompt-only)",
                 "model": "gemini-3.8-flash",
                 "description": "Google Gemini 3.8 Flash with prompt-only tool reasoning",
                 "configured": has_gemini_key,

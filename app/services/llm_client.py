@@ -8,11 +8,13 @@ class LLMToolCall(BaseModel):
     id: str = Field(default="call_mock_1")
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    raw_tool_call: dict[str, Any] | None = None
 
 
 class LLMResponse(BaseModel):
     content: str | None = None
     tool_calls: list[LLMToolCall] = Field(default_factory=list)
+    raw_message: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return self.content or ""
@@ -236,6 +238,123 @@ class GeminiLLMClient(BaseLLMClient):
             return LLMResponse(content=raw_content, tool_calls=tool_calls)
 
         return LLMResponse(content=raw_content, tool_calls=[])
+
+
+class GeminiNativeLLMClient(BaseLLMClient):
+    """Google Gemini 3.8 Flash Client with native API function calling.
+
+    Utilizes the standard OpenAI-compatible `tools` parameter and returns native
+    tool calls emitted by Gemini without prompt-based JSON wrapping.
+    Preserves the model's message content and thought_signature for multi-turn execution.
+    """
+
+    model_name = "gemini-3.8-flash"
+    is_prompt_only = False
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
+        model: str = "gemini-3.8-flash",
+        temperature: float = 0.0,
+        timeout: float = 30.0,
+    ) -> None:
+        self.api_key = api_key or get_gemini_api_key()
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.model_name = model
+        self.temperature = temperature
+        self.timeout = timeout
+
+    async def query(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        import httpx
+        import os
+        key = self.api_key or get_gemini_api_key()
+        if not key:
+            raise ValueError(
+                "Gemini API key not found. Please set GEMINI_API_KEY or GOOGLE_API_KEY "
+                "in your environment or .env file."
+            )
+
+        endpoint = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        data = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        break
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                        import asyncio
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise RuntimeError(
+                        f"Gemini API returned status {resp.status_code}: {resp.text}"
+                    )
+            except (httpx.TimeoutException, httpx.NetworkError) as err:
+                if attempt < max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Network error communicating with Gemini: {err}")
+
+        choices = data.get("choices", [])
+        if not choices:
+            return LLMResponse(content="No response received from Gemini.")
+
+        raw_message = choices[0].get("message", {})
+        raw_content = raw_message.get("content") or ""
+        raw_tool_calls = raw_message.get("tool_calls") or []
+
+        tool_calls: list[LLMToolCall] = []
+        for item in raw_tool_calls:
+            call_id = item.get("id") or f"call_native_{os.urandom(4).hex()}"
+            func = item.get("function") or {}
+            name = func.get("name") or item.get("name") or ""
+            raw_args = func.get("arguments") or item.get("arguments") or {}
+
+            if isinstance(raw_args, str):
+                try:
+                    args = json.loads(raw_args)
+                except Exception:
+                    args = {}
+            elif isinstance(raw_args, dict):
+                args = raw_args
+            else:
+                args = {}
+
+            tool_calls.append(
+                LLMToolCall(
+                    id=call_id,
+                    name=name,
+                    arguments=args,
+                    raw_tool_call=item,
+                )
+            )
+
+        return LLMResponse(
+            content=raw_content,
+            tool_calls=tool_calls,
+            raw_message=raw_message,
+        )
 
 
 class MockLLMClient(BaseLLMClient):
@@ -615,3 +734,6 @@ class MockLLMClient(BaseLLMClient):
 mock_llm_client = MockLLMClient()
 
 gemini_llm_client = GeminiLLMClient()
+
+gemini_native_llm_client = GeminiNativeLLMClient()
+

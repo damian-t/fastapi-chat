@@ -6,8 +6,10 @@ from app.services.llm_client import (
     BaseLLMClient,
     MockLLMClient,
     GeminiLLMClient,
+    GeminiNativeLLMClient,
     mock_llm_client,
     gemini_llm_client,
+    gemini_native_llm_client,
 )
 from app.services.sld_service import sld_service
 
@@ -153,9 +155,14 @@ class LLMService:
                 }
             ]
 
-        for item in (history or []):
+        user_msg = message.strip()
+        hist = list(history or [])
+        if hist and hist[-1].role == "user" and hist[-1].content.strip() == user_msg:
+            hist = hist[:-1]
+
+        for item in hist:
             messages.append({"role": item.role, "content": item.content})
-        messages.append({"role": "user", "content": message.strip()})
+        messages.append({"role": "user", "content": user_msg})
 
         records: list[ToolCallRecord] = []
         iteration_steps: list[IterationStep] = []
@@ -263,19 +270,37 @@ class LLMService:
                 })
 
             else:
-                # Role-based tool response for Mock LLM client
-                messages.append({
-                    "role": "assistant",
-                    "content": llm_decision.content,
-                    "tool_calls": [tc.model_dump() for tc in llm_decision.tool_calls],
-                })
+                # Role-based tool response for Native Tool Calling or Mock LLM client
+                if getattr(llm_decision, "raw_message", None):
+                    messages.append(llm_decision.raw_message)
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": llm_decision.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments),
+                                },
+                            }
+                            for tc in llm_decision.tool_calls
+                        ],
+                    })
 
                 # Backend executes the tool calls as instructed by the LLM
                 for tc in llm_decision.tool_calls:
                     runner = TOOL_RUNNERS.get(tc.name)
                     if not runner:
                         err_msg = {"error": f"Tool '{tc.name}' not found"}
-                        messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_msg)})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": json.dumps(err_msg),
+                        })
                         record = ToolCallRecord(
                             tool=tc.name,
                             parameters=tc.arguments,
@@ -288,7 +313,12 @@ class LLMService:
 
                     try:
                         tool_output = runner(tc.arguments)
-                        messages.append({"role": "tool", "name": tc.name, "content": json.dumps(tool_output)})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": json.dumps(tool_output),
+                        })
                         record = ToolCallRecord(
                             tool=tc.name,
                             parameters=tc.arguments,
@@ -299,7 +329,12 @@ class LLMService:
                         current_step_tools.append(record)
                     except Exception as exc:
                         err_output = {"error": str(exc)}
-                        messages.append({"role": "tool", "name": tc.name, "content": json.dumps(err_output)})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": json.dumps(err_output),
+                        })
                         record = ToolCallRecord(
                             tool=tc.name,
                             parameters=tc.arguments,
@@ -346,11 +381,14 @@ class LLMService:
 
 dummy_llm_service = LLMService(llm_client=mock_llm_client)
 gemini_llm_service = LLMService(llm_client=gemini_llm_client)
+gemini_native_llm_service = LLMService(llm_client=gemini_native_llm_client)
 
 
 def get_llm_service(mode: str | None = None) -> LLMService:
-    """Retrieve LLM service for the requested mode ('mock' or 'gemini')."""
+    """Retrieve LLM service for the requested mode ('mock', 'gemini-native', or 'gemini')."""
     selected = (mode or os.getenv("LLM_MODE", "mock")).lower().strip()
-    if selected in ("gemini", "gemini-3.8-flash", "live"):
+    if selected in ("gemini-native", "native", "gemini-tools", "gemini-function-calling"):
+        return gemini_native_llm_service
+    if selected in ("gemini", "gemini-3.8-flash", "live", "gemini-prompt"):
         return gemini_llm_service
     return dummy_llm_service

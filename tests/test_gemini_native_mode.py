@@ -130,6 +130,147 @@ async def test_gemini_native_multi_turn_tool_loop_mocked():
 
 
 @pytest.mark.asyncio
+async def test_gemini_native_four_turn_tool_and_interpretation_flow():
+    """Verify complete 4-turn interaction loop using GeminiNativeLLMClient / service:
+    Turn 1: Gemini decides to call get_rfqs -> backend executes tool against SLD data.
+    Turn 2: Gemini receives RFQs, decides to call get_underlyings_of_product -> backend executes tool.
+    Turn 3: Gemini receives underlyings, decides to call get_fees_of_product -> backend executes tool.
+    Turn 4: Gemini receives all gathered data, determines info is sufficient, and formulates final interpretation.
+    """
+    from app.services.llm_service import gemini_native_llm_service
+    from app.services.llm_client import LLMResponse
+
+    call_history: list[list[dict]] = []
+
+    t1_response = LLMResponse(
+        content=None,
+        tool_calls=[LLMToolCall(id="call_t1_rfq", name="get_rfqs", arguments={"currency": "CHF", "status": "open"})],
+        raw_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_t1_rfq",
+                "type": "function",
+                "function": {"name": "get_rfqs", "arguments": json.dumps({"currency": "CHF", "status": "open"})},
+                "extra_content": {"google": {"thought_signature": "sig_turn_1"}}
+            }]
+        }
+    )
+
+    t2_response = LLMResponse(
+        content=None,
+        tool_calls=[LLMToolCall(id="call_t2_und", name="get_underlyings_of_product", arguments={"product_id": "PRD-104"})],
+        raw_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_t2_und",
+                "type": "function",
+                "function": {"name": "get_underlyings_of_product", "arguments": json.dumps({"product_id": "PRD-104"})},
+                "extra_content": {"google": {"thought_signature": "sig_turn_2"}}
+            }]
+        }
+    )
+
+    t3_response = LLMResponse(
+        content=None,
+        tool_calls=[LLMToolCall(id="call_t3_fees", name="get_fees_of_product", arguments={"product_id": "PRD-104"})],
+        raw_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_t3_fees",
+                "type": "function",
+                "function": {"name": "get_fees_of_product", "arguments": json.dumps({"product_id": "PRD-104"})},
+                "extra_content": {"google": {"thought_signature": "sig_turn_3"}}
+            }]
+        }
+    )
+
+    t4_final_interpretation = (
+        "### Financial Analysis for RFQ-104 (PRD-104)\n\n"
+        "• **Product**: 18M Barrier Reverse Convertible on ABB, Sika, and Geberit\n"
+        "• **Underlying Performance**: All 3 Swiss equities are currently trading above their 65% barrier levels.\n"
+        "• **Fee Structure**: Total fee is 0.95% (CHF 1,425.00), comprised of 0.50% distribution fee and 0.45% structuring fee."
+    )
+
+    t4_response = LLMResponse(
+        content=t4_final_interpretation,
+        tool_calls=[],
+        raw_message={"role": "assistant", "content": t4_final_interpretation}
+    )
+
+    async def mock_query(messages, tools=None):
+        # Tools specification must be passed on all queries in native mode
+        assert tools == SLD_TOOLS
+        call_history.append([dict(m) for m in messages])
+        turn_num = len(call_history)
+        if turn_num == 1:
+            return t1_response
+        elif turn_num == 2:
+            return t2_response
+        elif turn_num == 3:
+            return t3_response
+        elif turn_num == 4:
+            return t4_response
+        raise RuntimeError(f"Unexpected turn {turn_num}")
+
+    with patch.object(gemini_native_llm_service.llm_client, "query", side_effect=mock_query):
+        reply, records, steps = await gemini_native_llm_service.execute_and_interpret(
+            "Analyze the open Swiss RFQ with underlyings and fees",
+            return_iterations=True
+        )
+
+    # 1. Verify 4 LLM turns were made
+    assert len(call_history) == 4
+
+    # Turn 1: system prompt + user message
+    assert len(call_history[0]) == 2
+    assert call_history[0][0]["role"] == "system"
+    assert call_history[0][1]["role"] == "user"
+
+    # Turn 2: system + user + assistant (with tool_call 1) + tool result 1
+    assert len(call_history[1]) == 4
+    assert call_history[1][2]["role"] == "assistant"
+    assert call_history[1][3]["role"] == "tool"
+    assert call_history[1][3]["tool_call_id"] == "call_t1_rfq"
+    assert "RFQ-104" in call_history[1][3]["content"]
+
+    # Turn 3: ... + assistant (with tool_call 2) + tool result 2
+    assert len(call_history[2]) == 6
+    assert call_history[2][4]["role"] == "assistant"
+    assert call_history[2][5]["role"] == "tool"
+    assert call_history[2][5]["tool_call_id"] == "call_t2_und"
+    assert "ABBN" in call_history[2][5]["content"]
+
+    # Turn 4: ... + assistant (with tool_call 3) + tool result 3
+    assert len(call_history[3]) == 8
+    assert call_history[3][6]["role"] == "assistant"
+    assert call_history[3][7]["role"] == "tool"
+    assert call_history[3][7]["tool_call_id"] == "call_t3_fees"
+    assert "distribution_fee_pct" in call_history[3][7]["content"]
+
+    # 2. Verify backend recorded all 3 tool executions
+    assert len(records) == 3
+    assert [r.tool for r in records] == ["get_rfqs", "get_underlyings_of_product", "get_fees_of_product"]
+    assert records[0].parameters == {"currency": "CHF", "status": "open"}
+    assert records[1].parameters == {"product_id": "PRD-104"}
+    assert records[2].parameters == {"product_id": "PRD-104"}
+
+    # 3. Verify iteration steps recorded for inspection
+    assert len(steps) == 3
+    assert steps[0].iteration == 1
+    assert steps[1].iteration == 2
+    assert steps[2].iteration == 3
+
+    # 4. Verify the final interpreted response contains Gemini's synthesis and tool call summaries
+    assert "Tools Called (3)" in reply
+    assert "Financial Analysis for RFQ-104" in reply
+    assert "0.95%" in reply
+    assert "ABB, Sika, and Geberit" in reply
+
+
+@pytest.mark.asyncio
 async def test_live_gemini_native_mode_if_key_available():
     """Live test using Gemini 3.8 Flash native function calling API."""
     key = get_gemini_api_key()

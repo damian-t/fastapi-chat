@@ -1,186 +1,206 @@
 import csv
 import json
+import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from app.models.sld import (
-    RFQ,
-    RFQQuote,
     Underlying,
-    ProductUnderlyingsResponse,
-    ProductFeesResponse,
+    ProductGeneral,
+    ProductPricing,
+    Fee,
+    ProductFees,
+    Product,
 )
 
 DEFAULT_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "rfq_products.csv"
 
 
 class SLDService:
-    """Mock SLD Service providing structured product RFQs, underlyings, and fees loaded from CSV."""
+    """SLD Service providing structured products, underlyings, and fees loaded from dataset."""
 
     def __init__(self, csv_path: Path | str | None = None) -> None:
         self.csv_path = Path(csv_path) if csv_path else DEFAULT_CSV_PATH
-        self._rfqs: list[dict[str, Any]] = []
-        self._products: dict[str, dict[str, Any]] = {}
+        self._products_list: list[Product] = []
+        self._raw_records: list[dict[str, Any]] = []
+        self._products_by_id: dict[str, Product] = {}
+        self._fees_by_product_id: dict[str, list[Fee]] = {}
+        self._underlyings_by_product_id: dict[str, list[Underlying]] = {}
+        self._id_mappings: dict[str, str] = {}
         self._load_from_csv(self.csv_path)
 
+    def _extract_int_id(self, val: str | int | None) -> int:
+        if val is None:
+            return 0
+        if isinstance(val, int):
+            return val
+        digits = "".join(c for c in str(val) if c.isdigit())
+        return int(digits) if digits else 0
+
     def _load_from_csv(self, csv_file: Path) -> None:
-        """Load RFQs, underlyings, and fees from CSV."""
+        """Load products, underlyings, and fees from CSV dataset."""
         if not csv_file.exists():
             raise FileNotFoundError(f"Mock dataset CSV not found at: {csv_file}")
 
-        self._rfqs.clear()
-        self._products.clear()
+        self._products_list.clear()
+        self._raw_records.clear()
+        self._products_by_id.clear()
+        self._fees_by_product_id.clear()
+        self._underlyings_by_product_id.clear()
+        self._id_mappings.clear()
 
         with open(csv_file, mode="r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 rfq_id = row["rfq_id"]
-                product_id = row["product_id"]
+                product_id_str = row["product_id"]
+                int_id = self._extract_int_id(product_id_str)
                 isin = row["isin"]
                 product_name = row["product_name"]
                 product_type = row["product_type"]
-                basket_type = row.get("basket_type", "Worst-of Basket")
-                status = row["status"]
                 currency = row["currency"]
-                nominal = float(row["nominal"])
-                client = row["client"]
-                created_at = row["created_at"]
-                expires_at = row["expires_at"]
-                traded_with = row["traded_with"] if row.get("traded_with") else None
-                traded_price_pct = (
-                    float(row["traded_price_pct"])
-                    if row.get("traded_price_pct") and row["traded_price_pct"].strip()
-                    else None
-                )
+                nominal = float(row["nominal"]) if row.get("nominal") else 100000.0
+                client = row.get("client")
+                status = row.get("status", "open")
 
-                # Parse quotes
-                quotes_raw = json.loads(row["quotes"]) if row.get("quotes") else []
-                quotes = [
-                    RFQQuote(
-                        issuer=q["issuer"],
-                        price_pct=float(q["price_pct"]),
-                        coupon_pct_pa=float(q["coupon_pct_pa"]),
-                        timestamp=q["timestamp"],
-                        valid_until=q["valid_until"],
-                    )
-                    for q in quotes_raw
-                ]
-
-                # Best quote
-                best_quote = None
-                if row.get("best_quote") and row["best_quote"].strip():
-                    bq_data = json.loads(row["best_quote"])
-                    best_quote = RFQQuote(
-                        issuer=bq_data["issuer"],
-                        price_pct=float(bq_data["price_pct"]),
-                        coupon_pct_pa=float(bq_data["coupon_pct_pa"]),
-                        timestamp=bq_data["timestamp"],
-                        valid_until=bq_data["valid_until"],
-                    )
+                # Map various identifiers to product_id_str
+                self._id_mappings[str(int_id)] = product_id_str
+                self._id_mappings[product_id_str.upper()] = product_id_str
+                self._id_mappings[rfq_id.upper()] = product_id_str
+                self._id_mappings[isin.upper()] = product_id_str
 
                 # Parse underlyings
                 underlyings_raw = json.loads(row["underlyings"]) if row.get("underlyings") else []
-                underlying_objs = []
-                underlying_tickers = []
+                underlying_objs: list[Underlying] = []
                 for u in underlyings_raw:
-                    u_obj = Underlying(
-                        name=u["name"],
-                        ticker=u["ticker"],
-                        asset_class=u["asset_class"],
-                        currency=u["currency"],
-                        spot_price=float(u["spot_price"]),
-                        strike_level_pct=float(u["strike_level_pct"]),
-                        barrier_level_pct=(
-                            float(u["barrier_level_pct"])
-                            if u.get("barrier_level_pct") is not None
-                            else None
-                        ),
-                        current_price=float(u["current_price"]),
-                        performance_pct=float(u["performance_pct"]),
-                        barrier_hit=bool(u.get("barrier_hit", False)),
-                        distance_to_barrier_pct=(
-                            float(u["distance_to_barrier_pct"])
-                            if u.get("distance_to_barrier_pct") is not None
-                            else None
-                        ),
-                    )
-                    underlying_objs.append(u_obj)
-                    underlying_tickers.append(u["ticker"])
+                    ticker = u.get("ticker") or u.get("underlyingBloombergTicker") or str(u)
+                    underlying_objs.append(Underlying(underlyingBloombergTicker=ticker))
+
+                if not underlying_objs and row.get("underlying_tickers"):
+                    for t in row["underlying_tickers"].split(";"):
+                        t_clean = t.strip()
+                        if t_clean:
+                            underlying_objs.append(Underlying(underlyingBloombergTicker=t_clean))
+
+                self._underlyings_by_product_id[product_id_str] = underlying_objs
 
                 # Parse fees
-                dist_fee = float(row.get("distribution_fee_pct", 0.0))
-                struct_fee = float(row.get("structuring_fee_pct", 0.0))
+                dist_fee = float(row.get("distribution_fee_pct", 0.5))
+                struct_fee = float(row.get("structuring_fee_pct", 0.25))
                 mgmt_fee = float(row.get("management_fee_pct_pa", 0.0))
-                exch_fee = float(row.get("exchange_fee_pct", 0.0))
-                total_fee = float(row.get("total_fee_pct", dist_fee + struct_fee + mgmt_fee + exch_fee))
-                fee_desc = row.get("fee_description", "")
+                exch_fee = float(row.get("exchange_fee_pct", 0.05))
+                total_entry = Decimal(str(round(dist_fee + struct_fee + exch_fee, 4)))
 
-                fees_dict = {
-                    "distribution_fee_pct": dist_fee,
-                    "structuring_fee_pct": struct_fee,
-                    "management_fee_pct_pa": mgmt_fee,
-                    "exchange_fee_pct": exch_fee,
-                    "total_fee_pct": total_fee,
-                    "description": fee_desc,
-                }
+                fees_list = [
+                    Fee(
+                        name="Distribution Fee",
+                        amount=dist_fee,
+                        feeType="distribution",
+                        maturityType="at_issue",
+                        isPricingRelevant=True,
+                    ),
+                    Fee(
+                        name="Structuring Fee",
+                        amount=struct_fee,
+                        feeType="structuring",
+                        maturityType="at_issue",
+                        isPricingRelevant=True,
+                    ),
+                    Fee(
+                        name="Management Fee",
+                        amount=mgmt_fee,
+                        feeType="management",
+                        maturityType="recurring",
+                        isPricingRelevant=False,
+                    ),
+                    Fee(
+                        name="Exchange Fee",
+                        amount=exch_fee,
+                        feeType="exchange",
+                        maturityType="at_issue",
+                        isPricingRelevant=True,
+                    ),
+                ]
+                self._fees_by_product_id[product_id_str] = fees_list
 
-                rfq_dict = {
-                    "rfq_id": rfq_id,
-                    "product_id": product_id,
-                    "isin": isin,
-                    "product_name": product_name,
-                    "product_type": product_type,
-                    "status": status,
-                    "currency": currency,
-                    "nominal": nominal,
-                    "client": client,
-                    "underlyings": underlying_tickers,
-                    "quotes": [q.model_dump() for q in quotes],
-                    "best_quote": best_quote.model_dump() if best_quote else None,
-                    "traded_with": traded_with,
-                    "traded_price_pct": traded_price_pct,
-                    "created_at": created_at,
-                    "expires_at": expires_at,
-                }
-                self._rfqs.append(rfq_dict)
+                # Fair value pricing
+                fair_val = 100.0
+                if row.get("traded_price_pct") and row["traded_price_pct"].strip():
+                    fair_val = float(row["traded_price_pct"])
+                elif row.get("best_quote") and row["best_quote"].strip():
+                    try:
+                        bq = json.loads(row["best_quote"])
+                        fair_val = float(bq.get("price_pct", 100.0))
+                    except Exception:
+                        pass
 
-                self._products[product_id] = {
-                    "rfq_id": rfq_id,
-                    "product_id": product_id,
-                    "isin": isin,
-                    "product_name": product_name,
-                    "product_type": product_type,
-                    "basket_type": basket_type,
-                    "currency": currency,
-                    "nominal": nominal,
-                    "underlyings": [u.model_dump() for u in underlying_objs],
-                    "fees": fees_dict,
-                }
+                general = ProductGeneral(
+                    productId=int_id,
+                    productUuid=product_id_str,
+                    partyIdentifierCustodian=None,
+                    partyIdentifierClient=client,
+                    productType=product_type,
+                    productAmount=nominal,
+                    productQuotationType="Percentage",
+                    currency=currency,
+                    initialFixingType="Spot",
+                    initialFixingDate=row.get("created_at"),
+                    finalFixingDate=row.get("expires_at"),
+                    issueDate=row.get("created_at"),
+                    finalPaymentDate=row.get("expires_at"),
+                    underlyingList=underlying_objs,
+                    dayCountFraction="30/360",
+                    settlementType="Cash",
+                    finalValuationCutOffTime="17:00",
+                    finalValuationCutOffLocation="Zurich",
+                    productName=product_name,
+                    valor=None,
+                    isin=isin,
+                )
 
-    def _resolve_product_id(self, identifier: str) -> str | None:
-        """Resolve a product ID from product_id, isin, or rfq_id."""
-        clean = identifier.strip().upper()
+                pricing = ProductPricing(fairValue=Decimal(str(round(fair_val, 4))))
+                fees = ProductFees(entryCosts=total_entry, _product_id=int_id)
 
-        if clean in self._products:
-            return clean
+                quotes_raw = json.loads(row["quotes"]) if row.get("quotes") else []
 
-        for pid, data in self._products.items():
-            if data.get("isin", "").upper() == clean:
-                return pid
+                product = Product(
+                    productGeneral=general,
+                    productPricing=pricing,
+                    productFees=fees,
+                    _status=status,
+                    _quotes=quotes_raw,
+                )
 
-        for rfq in self._rfqs:
-            if rfq["rfq_id"].upper() == clean or rfq.get("isin", "").upper() == clean:
-                return rfq["product_id"]
+                self._products_list.append(product)
+                self._products_by_id[product_id_str] = product
 
-        for pid in self._products:
-            if clean in pid:
-                return pid
+                raw_record = dict(row)
+                raw_record["_product"] = product
+                self._raw_records.append(raw_record)
+
+    def _resolve_key(self, identifier: str | int) -> str | None:
+        """Resolve a lookup key to the primary product_id_str."""
+        if identifier is None:
+            return None
+        key = str(identifier).strip().upper()
+        if key in self._id_mappings:
+            return self._id_mappings[key]
+
+        # Try numeric string
+        digits = "".join(c for c in key if c.isdigit())
+        if digits and digits in self._id_mappings:
+            return self._id_mappings[digits]
+
+        for k, v in self._id_mappings.items():
+            if key in k:
+                return v
 
         return None
 
     def get_rfqs(
         self,
-        rfq_id: str | None = None,
+        rfq_id: str | int | None = None,
         status: str | None = None,
         issuer: str | None = None,
         product_type: str | None = None,
@@ -188,120 +208,100 @@ class SLDService:
         client: str | None = None,
         limit: int = 10,
         offset: int = 0,
-    ) -> list[RFQ]:
-        """Fetch RFQs matching specified filter criteria.
+    ) -> list[Product]:
+        """Fetch products matching specified filter criteria.
 
-        Args:
-            rfq_id: Filter by exact or partial RFQ ID, ISIN, or product ID
-            status: Filter by status ('open', 'quoted', 'traded', 'expired', 'rejected')
-            issuer: Filter by quoted or traded issuer (e.g. 'ZKB', 'UBS', 'Vontobel', 'BNP Paribas')
-            product_type: Filter by product structure type
-            currency: Filter by currency (e.g. 'CHF', 'USD', 'EUR')
-            client: Filter by client name
-            limit: Maximum number of RFQs to return
-            offset: Number of RFQs to skip
+        Returns a list of Product dataclasses.
         """
-        results: list[dict[str, Any]] = self._rfqs
+        filtered_records = self._raw_records
 
-        if rfq_id:
-            rfq_clean = rfq_id.strip().upper()
-            results = [
-                r for r in results
-                if rfq_clean in r["rfq_id"].upper()
-                or rfq_clean in r.get("isin", "").upper()
-                or rfq_clean in r.get("product_id", "").upper()
+        if rfq_id is not None:
+            clean = str(rfq_id).strip().upper()
+            filtered_records = [
+                r for r in filtered_records
+                if clean in r["rfq_id"].upper()
+                or clean in r.get("isin", "").upper()
+                or clean in r.get("product_id", "").upper()
+                or clean in str(self._extract_int_id(r.get("product_id")))
             ]
 
         if status:
             stat_clean = status.strip().lower()
-            results = [r for r in results if r["status"].lower() == stat_clean]
+            filtered_records = [
+                r for r in filtered_records if r.get("status", "").lower() == stat_clean
+            ]
 
         if currency:
             curr_clean = currency.strip().upper()
-            results = [r for r in results if r["currency"].upper() == curr_clean]
+            filtered_records = [
+                r for r in filtered_records if r.get("currency", "").upper() == curr_clean
+            ]
 
         if product_type:
             pt_clean = product_type.strip().lower()
-            results = [r for r in results if pt_clean in r["product_type"].lower()]
+            filtered_records = [
+                r for r in filtered_records if pt_clean in r.get("product_type", "").lower()
+            ]
 
         if client:
             client_clean = client.strip().lower()
-            results = [r for r in results if client_clean in r["client"].lower()]
+            filtered_records = [
+                r for r in filtered_records if client_clean in r.get("client", "").lower()
+            ]
 
         if issuer:
             iss_clean = issuer.strip().lower()
             filtered = []
-            for r in results:
+            for r in filtered_records:
                 if r.get("traded_with") and iss_clean in r["traded_with"].lower():
                     filtered.append(r)
                     continue
-                quote_issuers = [q["issuer"].lower() for q in r.get("quotes", [])]
+                quotes = json.loads(r.get("quotes", "[]")) if r.get("quotes") else []
+                quote_issuers = [q.get("issuer", "").lower() for q in quotes]
                 if any(iss_clean in qi for qi in quote_issuers):
                     filtered.append(r)
-            results = filtered
+            filtered_records = filtered
 
-        paginated = results[offset : offset + limit] if limit else results[offset:]
-        return [RFQ(**r) for r in paginated]
+        paginated = filtered_records[offset : offset + limit] if limit else filtered_records[offset:]
+        return [r["_product"] for r in paginated]
 
+    get_products = get_rfqs
     get_rfq = get_rfqs
 
-    def get_underlyings_of_product(self, product_id: str) -> ProductUnderlyingsResponse:
-        """Fetch underlying assets and parameters for a specific product or RFQ.
+    def get_underlyings_of_product(self, product_id: str | int) -> list[Underlying]:
+        """Fetch underlying Bloomberg tickers for a specific product.
 
-        Args:
-            product_id: Product ID (e.g. 'PRD-101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')
+        Returns a list of Underlying dataclasses.
         """
-        resolved_id = self._resolve_product_id(product_id)
-        if not resolved_id or resolved_id not in self._products:
+        key = self._resolve_key(product_id)
+        if not key or key not in self._underlyings_by_product_id:
             raise ValueError(f"Product '{product_id}' not found in SLD database.")
+        return list(self._underlyings_by_product_id[key])
 
-        pdata = self._products[resolved_id]
-        underlying_objs = [Underlying(**u) for u in pdata["underlyings"]]
-
-        return ProductUnderlyingsResponse(
-            product_id=resolved_id,
-            isin=pdata["isin"],
-            product_name=pdata["product_name"],
-            basket_type=pdata["basket_type"],
-            underlyings=underlying_objs,
-        )
-
+    get_underlying_of_product = get_underlyings_of_product
+    get_underlyings_for_product = get_underlyings_of_product
     get_underlyings_ofproducts = get_underlyings_of_product
 
     def get_fees_of_product(
-        self, product_id: str, fee_type: str | None = None
-    ) -> ProductFeesResponse:
-        """Fetch fee structure for a specific structured product or RFQ.
+        self, product_id: str | int, fee_type: str | None = None
+    ) -> list[Fee]:
+        """Fetch fee schedule for a specific structured product.
 
-        Args:
-            product_id: Product ID (e.g. 'PRD-101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')
-            fee_type: Optional fee category filter (e.g. 'distribution', 'structuring', 'all')
+        Returns a list of Fee dataclasses.
         """
-        resolved_id = self._resolve_product_id(product_id)
-        if not resolved_id or resolved_id not in self._products:
+        key = self._resolve_key(product_id)
+        if not key or key not in self._fees_by_product_id:
             raise ValueError(f"Product '{product_id}' not found in SLD database.")
 
-        pdata = self._products[resolved_id]
-        fdata = pdata["fees"]
-        nominal = pdata["nominal"]
-        currency = pdata["currency"]
-        total_fee_pct = fdata["total_fee_pct"]
-        monetary_amount = round(nominal * (total_fee_pct / 100.0), 2)
+        fees = self._fees_by_product_id[key]
+        if fee_type:
+            ft_clean = fee_type.strip().lower()
+            if ft_clean != "all":
+                fees = [f for f in fees if ft_clean in f.feeType.lower() or ft_clean in f.name.lower()]
 
-        return ProductFeesResponse(
-            product_id=resolved_id,
-            isin=pdata["isin"],
-            product_name=pdata["product_name"],
-            currency=currency,
-            nominal=nominal,
-            distribution_fee_pct=fdata["distribution_fee_pct"],
-            structuring_fee_pct=fdata["structuring_fee_pct"],
-            management_fee_pct_pa=fdata["management_fee_pct_pa"],
-            exchange_fee_pct=fdata["exchange_fee_pct"],
-            total_fee_pct=total_fee_pct,
-            estimated_monetary_amount=monetary_amount,
-            description=fdata["description"],
-        )
+        return list(fees)
+
+    get_fees_for_product = get_fees_of_product
 
 
 sld_service = SLDService()

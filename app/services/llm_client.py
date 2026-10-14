@@ -525,7 +525,8 @@ class MockLLMClient(BaseLLMClient):
             rfq_data = executed_tools["get_rfqs"]
             if isinstance(rfq_data, list) and len(rfq_data) > 0:
                 first_rfq = rfq_data[0]
-                product_id = first_rfq.get("product_id") or first_rfq.get("rfq_id")
+                gen = first_rfq.get("productGeneral") or first_rfq
+                product_id = gen.get("productUuid") or gen.get("productId") or first_rfq.get("product_id") or first_rfq.get("rfq_id")
 
         # 2. From direct message
         if not product_id:
@@ -576,6 +577,8 @@ class MockLLMClient(BaseLLMClient):
                 if curr in user_message.upper():
                     rfq_args["currency"] = curr
                     break
+            if "swiss" in lower and "currency" not in rfq_args:
+                rfq_args["currency"] = "CHF"
             for iss in ["ZKB", "UBS", "Vontobel", "BNP Paribas"]:
                 if iss.lower() in lower:
                     rfq_args["issuer"] = iss
@@ -636,7 +639,13 @@ class MockLLMClient(BaseLLMClient):
         # 1. Underlyings
         if "get_underlyings_of_product" in executed_tools:
             data = executed_tools["get_underlyings_of_product"]
-            if isinstance(data, dict) and "underlyings" in data:
+            if isinstance(data, list):
+                lines = [f"📊 **Underlying Assets for Product** ({len(data)} underlyings):", ""]
+                for u in data:
+                    ticker = u.get("underlyingBloombergTicker") or u.get("ticker") or str(u)
+                    lines.append(f"• **Bloomberg Ticker:** `{ticker}`")
+                sections.append("\n".join(lines))
+            elif isinstance(data, dict) and "underlyings" in data:
                 lines = [
                     f"📊 **Underlying Assets for {data['product_name']}** (`{data['isin']}` / `{data['product_id']}`)",
                     f"• **Basket Structure:** {data['basket_type']}",
@@ -666,7 +675,15 @@ class MockLLMClient(BaseLLMClient):
         # 2. Fees
         if "get_fees_of_product" in executed_tools:
             data = executed_tools["get_fees_of_product"]
-            if isinstance(data, dict) and "total_fee_pct" in data:
+            if isinstance(data, list):
+                lines = [f"💰 **Fee Schedule ({len(data)} fee items):**", ""]
+                for f in data:
+                    rel_str = "Relevant for pricing" if f.get("isPricingRelevant") else "Not pricing relevant"
+                    lines.append(
+                        f"• **{f.get('name')}**: {f.get('amount')}% (Type: `{f.get('feeType')}`, Maturity: `{f.get('maturityType')}`, {rel_str})"
+                    )
+                sections.append("\n".join(lines))
+            elif isinstance(data, dict) and "total_fee_pct" in data:
                 lines = [
                     f"💰 **Fee Structure for {data['product_name']}** (`{data['isin']}`)",
                     f"• **Base Nominal:** {data['currency']} {data['nominal']:,.2f}",
@@ -682,51 +699,53 @@ class MockLLMClient(BaseLLMClient):
             elif isinstance(data, dict) and "error" in data:
                 sections.append(f"❌ **Error querying fees:** {data['error']}")
 
-        # 3. RFQs
+        # 3. RFQs / Products
         if "get_rfqs" in executed_tools:
             rfqs = executed_tools["get_rfqs"]
             if isinstance(rfqs, list):
                 if not rfqs:
-                    sections.append("🔍 No RFQs found matching the requested criteria.")
+                    sections.append("🔍 No products found matching the requested criteria.")
                 else:
-                    lines = [f"📋 **SLD RFQ Results** ({len(rfqs)} found):", ""]
+                    lines = [f"📋 **SLD Product Results** ({len(rfqs)} found):", ""]
                     for r in rfqs:
-                        status_badge = {
-                            "open": "🟡 OPEN",
-                            "quoted": "🔵 QUOTED",
-                            "traded": "🟢 TRADED",
-                            "expired": "⚪ EXPIRED",
-                            "rejected": "🔴 REJECTED",
-                        }.get(r.get("status"), str(r.get("status")).upper())
+                        gen = r.get("productGeneral") or r
+                        pricing = r.get("productPricing") or {}
+                        fees = r.get("productFees") or {}
 
-                        lines.append(f"**{r['rfq_id']}** — {r['product_name']} [{status_badge}]")
-                        lines.append(f"  • **ISIN / ID:** `{r['isin']}` | `{r['product_id']}`")
+                        prod_id = gen.get("productId") or gen.get("product_id") or r.get("product_id")
+                        name = gen.get("productName") or r.get("product_name") or "Product"
+                        isin = gen.get("isin") or r.get("isin") or "N/A"
+                        curr = gen.get("currency") or r.get("currency") or "CHF"
+                        nominal = gen.get("productAmount") or r.get("nominal") or 0.0
+                        ptype = gen.get("productType") or r.get("product_type") or "Structured Product"
+                        client = gen.get("partyIdentifierClient") or r.get("client") or ""
+
+                        fair_val = pricing.get("fairValue")
+                        fair_str = f" | **Fair Value:** {fair_val}%" if fair_val is not None else ""
+                        entry_costs = fees.get("entryCosts")
+                        costs_str = f" | **Entry Costs:** {entry_costs}%" if entry_costs is not None else ""
+
+                        und_list = gen.get("underlyingList") or r.get("underlyings") or []
+                        und_tickers = [
+                            u.get("underlyingBloombergTicker") if isinstance(u, dict) else str(u)
+                            for u in und_list
+                        ]
+                        und_str = f"  • **Underlyings:** {', '.join(und_tickers)}" if und_tickers else ""
+
+                        rfq_id_str = f"**{r.get('rfq_id')}** — " if r.get("rfq_id") else ""
+                        lines.append(f"{rfq_id_str}**Product #{prod_id}** — {name}")
+                        lines.append(f"  • **ISIN / ID:** `{isin}` | `{prod_id}`")
                         lines.append(
-                            f"  • **Type:** {r['product_type']} | **Volume:** {r['currency']} {r['nominal']:,.0f} | **Client:** {r['client']}"
+                            f"  • **Type:** {ptype} | **Volume:** {curr} {nominal:,.0f}" + (f" | **Client:** {client}" if client else "")
                         )
-                        lines.append(f"  • **Underlyings:** {', '.join(r.get('underlyings', []))}")
-
-                        if r.get("status") == "traded":
-                            lines.append(
-                                f"  • **Execution:** Traded with **{r.get('traded_with')}** at {r.get('traded_price_pct', 0):.2f}%"
-                            )
-                        elif r.get("best_quote"):
-                            bq = r["best_quote"]
-                            lines.append(
-                                f"  • **Best Quote:** **{bq['issuer']}** @ {bq['price_pct']:.2f}% "
-                                f"(Coupon: {bq['coupon_pct_pa']:.2f}% p.a.)"
-                            )
-                            quotes = r.get("quotes", [])
-                            if len(quotes) > 1:
-                                other_issuers = [q["issuer"] for q in quotes if q["issuer"] != bq["issuer"]]
-                                lines.append(f"  • **Other Quotes:** {', '.join(other_issuers)} ({len(quotes)} total)")
-                        elif r.get("status") == "open":
-                            lines.append("  • **Quotes:** Awaiting pricing from market makers")
-
+                        if fair_str or costs_str:
+                            lines.append(f"  • {fair_str.strip(' | ')}{costs_str}")
+                        if und_str:
+                            lines.append(und_str)
                         lines.append("")
                     sections.append("\n".join(lines).strip())
             elif isinstance(rfqs, dict) and "error" in rfqs:
-                sections.append(f"❌ **Error querying RFQs:** {rfqs['error']}")
+                sections.append(f"❌ **Error querying products:** {rfqs['error']}")
 
         return LLMResponse(content="\n\n---\n\n".join(sections))
 

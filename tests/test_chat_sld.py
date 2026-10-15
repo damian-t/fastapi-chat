@@ -101,3 +101,19 @@ def test_chat_context_carryover():
     assert len(data["tool_calls"]) == 1
     assert data["tool_calls"][0]["tool"] == "get_underlyings_of_product"
     assert "NESN SW" in data["reply"]
+
+
+def test_chat_date_based_search():
+    res = client.post(
+        "/api/chat",
+        json={"message": "Show me RFQs from 2026-09-28 to 2026-09-29"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["tool_calls"]) == 1
+    call = data["tool_calls"][0]
+    assert call["tool"] == "get_rfqs"
+    assert call["parameters"].get("start_date") == "2026-09-28"
+    assert call["parameters"].get("end_date") == "2026-09-29"
+    assert "Product #" in data["reply"] or "PRD-" in data["reply"]
+

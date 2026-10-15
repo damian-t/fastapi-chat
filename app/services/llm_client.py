@@ -410,8 +410,8 @@ class MockLLMClient(BaseLLMClient):
                 content=(
                     "💡 **SLD Chatbot Capabilities & Integrated Tools:**\n\n"
                     "I determine your intent and query the following SLD REST tools:\n\n"
-                    "1. `get_rfqs(rfq_id, status, issuer, product_type, currency, limit)`\n"
-                    "   Queries structured product RFQs by lifecycle state, issuer quotes, or product category.\n"
+                    "1. `get_rfqs(start_date, end_date, isin, valor)`\n"
+                    "   Queries structured product RFQs by search period (start_date, end_date) or security identifiers (isin, valor).\n"
                     "2. `get_underlyings_of_product(product_id)`\n"
                     "   Fetches basket constituents, spot vs current prices, barrier levels, and breach checks.\n"
                     "3. `get_fees_of_product(product_id, fee_type)`\n"
@@ -481,6 +481,8 @@ class MockLLMClient(BaseLLMClient):
             )
             or any(s in lower for s in ["open", "quoted", "traded", "expired", "rejected"])
             or any(c in user_message.upper() for c in ["CHF", "USD", "EUR"])
+            or any(d in lower for d in ["date", "period", "between", "since", "from", "after", "before", "until", "search period", "quoted on"])
+            or bool(re.search(r"\b\d{4}-\d{2}-\d{2}\b", user_message))
             or (any(iss in lower for iss in ["zkb", "ubs", "vontobel", "bnp", "lukb"]) and not is_asking_underlyings and not is_asking_fees)
         )
 
@@ -581,6 +583,18 @@ class MockLLMClient(BaseLLMClient):
             rfq_args: dict[str, Any] = {}
             if product_id and product_id.startswith("RFQ-"):
                 rfq_args["rfq_id"] = product_id
+
+            # Extract date search parameters
+            dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", user_message)
+            if len(dates) >= 2:
+                rfq_args["start_date"] = dates[0]
+                rfq_args["end_date"] = dates[1]
+            elif len(dates) == 1:
+                if any(w in lower for w in ["to", "until", "before", "end"]):
+                    rfq_args["end_date"] = dates[0]
+                else:
+                    rfq_args["start_date"] = dates[0]
+
             for status in ["open", "quoted", "traded", "expired", "rejected"]:
                 if status in lower:
                     rfq_args["status"] = status
@@ -595,6 +609,14 @@ class MockLLMClient(BaseLLMClient):
                 if iss.lower() in lower:
                     rfq_args["issuer"] = iss
                     break
+
+            isin_match = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", user_message, re.IGNORECASE)
+            if isin_match:
+                rfq_args["isin"] = isin_match.group(1).upper()
+            valor_match = re.search(r"\bvalor[:\s]*(\d+)\b", user_message, re.IGNORECASE)
+            if valor_match:
+                rfq_args["valor"] = valor_match.group(1)
+
             planned.append(
                 LLMToolCall(
                     id=f"call_{len(planned)+1}",

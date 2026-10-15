@@ -22,20 +22,35 @@ SLD_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_rfqs",
-            "description": "Fetch structured products from SLD with optional filters for status, currency, issuer, product type, or specific product ID/ISIN. Returns a list of Product objects containing general attributes, fair value pricing, and fees.",
+            "description": "Fetch structured products from SLD. Supports date-based search period (start_date, end_date) and security identifiers (isin, valor). Returns a list of Product objects containing productGeneral (productId, productName, isin, valor, currency, productAmount, productType, underlyingList), productPricing (fairValue), and productFees (entryCosts).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "rfq_id": {"type": "string", "description": "Specific product ID, RFQ ID, or ISIN (e.g. 'PRD-101', '101', 'RFQ-101', 'CH1261564201')"},
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date of search period (e.g. '2026-09-28' or ISO format YYYY-MM-DD)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date for search period (e.g. '2026-09-29' or ISO format YYYY-MM-DD)",
+                    },
+                    "isin": {
+                        "type": "string",
+                        "description": "Security ISIN identifier of the quoted product (e.g. 'CH1261564201')",
+                    },
+                    "valor": {
+                        "type": "string",
+                        "description": "Security Valor identifier of the quoted product (e.g. '126156101')",
+                    },
                     "status": {
                         "type": "string",
                         "enum": ["open", "quoted", "traded", "expired", "rejected"],
-                        "description": "Lifecycle status of the product",
+                        "description": "Optional lifecycle status of the product",
                     },
-                    "currency": {"type": "string", "description": "Currency code (e.g. CHF, USD, EUR)"},
-                    "issuer": {"type": "string", "description": "Quoted or traded issuer bank (e.g. ZKB, UBS, Vontobel, BNP Paribas)"},
-                    "product_type": {"type": "string", "description": "Product structure type (e.g. 'Barrier Reverse Convertible', 'Autocallable')"},
-                    "limit": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
+                    "currency": {"type": "string", "description": "Optional currency code (e.g. CHF, USD, EUR)"},
+                    "issuer": {"type": "string", "description": "Optional quoted or traded issuer bank (e.g. ZKB, UBS, Vontobel, BNP Paribas)"},
+                    "product_type": {"type": "string", "description": "Optional product structure type (e.g. 'Barrier Reverse Convertible', 'Autocallable')"},
+                    "rfq_id": {"type": "string", "description": "Optional specific product ID, RFQ ID, or ISIN"},
                 },
             },
         },
@@ -48,7 +63,7 @@ SLD_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101', '101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
+                    "product_id": {"type": "string", "description": "Mandatory product identifier: Product ID (e.g. 'PRD-101', '101'), Valor ('126156101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
                 },
                 "required": ["product_id"],
             },
@@ -62,7 +77,7 @@ SLD_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101', '101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
+                    "product_id": {"type": "string", "description": "Mandatory product identifier: Product ID (e.g. 'PRD-101', '101'), Valor ('126156101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
                     "fee_type": {"type": "string", "description": "Optional fee category filter (e.g. 'distribution', 'structuring', 'all')"},
                 },
                 "required": ["product_id"],
@@ -75,22 +90,27 @@ GEMINI_PROMPT_CONTEXT = """You are the SLD Structured Products Assistant. You di
 
 You have access to 3 tools in your context:
 
-1. get_rfqs(rfq_id=None, status=None, currency=None, issuer=None, product_type=None, limit=10)
-   Description: Fetch structured products from SLD. Returns a list of Product objects containing productGeneral (productId, productName, isin, currency, productAmount, productType, underlyingList), productPricing (fairValue), and productFees (entryCosts).
+1. get_rfqs(start_date=None, end_date=None, isin=None, valor=None)
+   Description: Fetch structured products from SLD with date-based search period (start_date, end_date) and security identifiers (isin, valor). Returns a list of Product objects containing productGeneral (productId, productName, isin, valor, currency, productAmount, productType, underlyingList), productPricing (fairValue), and productFees (entryCosts).
+   Parameters:
+     - start_date: Start date of search period (e.g. '2026-09-28' or ISO format YYYY-MM-DD)
+     - end_date: End date for search period (e.g. '2026-09-29' or ISO format YYYY-MM-DD)
+     - isin: Security ISIN identifier (e.g. 'CH1261564201')
+     - valor: Security Valor identifier (e.g. '126156101')
 
 2. get_underlyings_of_product(product_id)
    Description: Fetch underlying Bloomberg tickers for a structured product. Returns a list of Underlying objects (underlyingBloombergTicker).
    Parameters:
-     - product_id: Product ID (e.g. 'PRD-101', '101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
+     - product_id: Product ID (e.g. 'PRD-101', '101'), Valor (e.g. '126156101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
 
 3. get_fees_of_product(product_id, fee_type=None)
    Description: Fetch fee schedule for a product. Returns a list of Fee objects (name, amount, feeType, maturityType, isPricingRelevant).
    Parameters:
-     - product_id: Product ID (e.g. 'PRD-101', '101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
+     - product_id: Product ID (e.g. 'PRD-101', '101'), Valor (e.g. '126156101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
      - fee_type: Optional fee category ('distribution', 'structuring', 'all')
 
 INSTRUCTIONS:
-- Evaluate the user query. Determine which tools to call and with what parameters.
+- Evaluate the user query. Determine which tools to call and with what parameters. You have date-based search capability via `start_date` and `end_date` on `get_rfqs`.
 - If you need to call tools, respond ONLY with a JSON block in this format:
 ```json
 {
@@ -132,14 +152,25 @@ def _run_get_rfqs(args: dict[str, Any]) -> Any:
                 isin = sld_service._products_by_id[resolved].isin
                 valor = sld_service._products_by_id[resolved].valor
 
-    return _serialize_tool_output(
-        sld_service.get_rfqs(
-            start_date=start_date,
-            end_date=end_date,
-            isin=isin,
-            valor=valor,
-        )
+    prods = sld_service.get_rfqs(
+        start_date=start_date,
+        end_date=end_date,
+        isin=isin,
+        valor=valor,
     )
+    if "status" in args and args["status"]:
+        st = str(args["status"]).lower()
+        prods = [p for p in prods if p.status.lower() == st]
+    if "currency" in args and args["currency"]:
+        curr = str(args["currency"]).upper()
+        prods = [p for p in prods if p.currency.upper() == curr]
+    if "issuer" in args and args["issuer"]:
+        iss = str(args["issuer"]).lower()
+        prods = [
+            p for p in prods
+            if any(iss in (q.get("issuer") or "").lower() for q in p.quotes)
+        ]
+    return _serialize_tool_output(prods)
 
 
 TOOL_RUNNERS = {

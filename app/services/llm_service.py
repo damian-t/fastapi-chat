@@ -13,25 +13,28 @@ from app.services.llm_client import (
 )
 from app.services.sld_service import sld_service
 
+from dataclasses import asdict
+from decimal import Decimal
+
 # Tool descriptions provided to the LLM
 SLD_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "get_rfqs",
-            "description": "Fetch structured product RFQs from SLD with optional filters for status, currency, issuer, product type, or specific RFQ ID.",
+            "description": "Fetch structured products from SLD with optional filters for status, currency, issuer, product type, or specific product ID/ISIN. Returns a list of Product objects containing general attributes, fair value pricing, and fees.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "rfq_id": {"type": "string", "description": "Specific RFQ ID or ISIN (e.g. 'RFQ-101')"},
+                    "rfq_id": {"type": "string", "description": "Specific product ID, RFQ ID, or ISIN (e.g. 'PRD-101', '101', 'RFQ-101', 'CH1261564201')"},
                     "status": {
                         "type": "string",
                         "enum": ["open", "quoted", "traded", "expired", "rejected"],
-                        "description": "Lifecycle status of the RFQ",
+                        "description": "Lifecycle status of the product",
                     },
                     "currency": {"type": "string", "description": "Currency code (e.g. CHF, USD, EUR)"},
                     "issuer": {"type": "string", "description": "Quoted or traded issuer bank (e.g. ZKB, UBS, Vontobel, BNP Paribas)"},
-                    "product_type": {"type": "string", "description": "Product type (e.g. 'Barrier Reverse Convertible', 'Autocallable')"},
+                    "product_type": {"type": "string", "description": "Product structure type (e.g. 'Barrier Reverse Convertible', 'Autocallable')"},
                     "limit": {"type": "integer", "description": "Maximum number of results to return", "default": 10},
                 },
             },
@@ -41,11 +44,11 @@ SLD_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_underlyings_of_product",
-            "description": "Fetch underlying basket constituents, strike levels, spot prices, current prices, barrier levels, and breach status for a product or RFQ.",
+            "description": "Fetch underlying Bloomberg tickers for a structured product or RFQ. Returns a list of Underlying objects (underlyingBloombergTicker).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
+                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101', '101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
                 },
                 "required": ["product_id"],
             },
@@ -55,11 +58,11 @@ SLD_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_fees_of_product",
-            "description": "Fetch the fee schedule (distribution fee, structuring fee, management fee, exchange fee, total fee % and monetary amount) for a product or RFQ.",
+            "description": "Fetch fee schedule (name, amount, feeType, maturityType, isPricingRelevant) for a structured product. Returns a list of Fee objects.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
+                    "product_id": {"type": "string", "description": "Product ID (e.g. 'PRD-101', '101'), ISIN ('CH1261564201'), or RFQ ID ('RFQ-101')"},
                     "fee_type": {"type": "string", "description": "Optional fee category filter (e.g. 'distribution', 'structuring', 'all')"},
                 },
                 "required": ["product_id"],
@@ -68,22 +71,22 @@ SLD_TOOLS = [
     },
 ]
 
-GEMINI_PROMPT_CONTEXT = """You are the SLD Structured Products Assistant. You distribute and answer inquiries about Requests for Quotes (RFQs), underlying basket performance, and fee schedules for structured products in the SLD application.
+GEMINI_PROMPT_CONTEXT = """You are the SLD Structured Products Assistant. You distribute and answer inquiries about structured products, their underlying Bloomberg tickers, and fee schedules in the SLD application.
 
 You have access to 3 tools in your context:
 
 1. get_rfqs(rfq_id=None, status=None, currency=None, issuer=None, product_type=None, limit=10)
-   Description: Fetch structured product RFQs from SLD with optional filters for status ('open', 'quoted', 'traded', 'expired', 'rejected'), currency (e.g. 'CHF', 'USD', 'EUR'), issuer (e.g. 'ZKB', 'UBS', 'Vontobel', 'BNP Paribas'), product type ('Barrier Reverse Convertible', 'Autocallable'), or specific RFQ ID.
+   Description: Fetch structured products from SLD. Returns a list of Product objects containing productGeneral (productId, productName, isin, currency, productAmount, productType, underlyingList), productPricing (fairValue), and productFees (entryCosts).
 
 2. get_underlyings_of_product(product_id)
-   Description: Fetch underlying basket constituents, strike levels, spot prices, current prices, barrier levels, and breach status for a product or RFQ.
+   Description: Fetch underlying Bloomberg tickers for a structured product. Returns a list of Underlying objects (underlyingBloombergTicker).
    Parameters:
-     - product_id: Product ID (e.g. 'PRD-101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
+     - product_id: Product ID (e.g. 'PRD-101', '101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
 
 3. get_fees_of_product(product_id, fee_type=None)
-   Description: Fetch the fee schedule (distribution fee, structuring fee, management fee, exchange fee, total fee % and monetary amount) for a product or RFQ.
+   Description: Fetch fee schedule for a product. Returns a list of Fee objects (name, amount, feeType, maturityType, isPricingRelevant).
    Parameters:
-     - product_id: Product ID (e.g. 'PRD-101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
+     - product_id: Product ID (e.g. 'PRD-101', '101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
      - fee_type: Optional fee category ('distribution', 'structuring', 'all')
 
 INSTRUCTIONS:
@@ -102,10 +105,22 @@ INSTRUCTIONS:
 - If you have sufficient information to answer the user query (or for general greetings/help), provide a clear, professional, and comprehensive final response answering the question and interpreting any financial results in markdown. Do NOT output a tool_calls JSON block when providing your final response.
 """
 
+
+def _serialize_tool_output(obj: Any) -> Any:
+    if isinstance(obj, list):
+        return [_serialize_tool_output(x) for x in obj]
+    if hasattr(obj, "__dataclass_fields__"):
+        d = asdict(obj)
+        return json.loads(json.dumps(d, default=float))
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return obj
+
+
 TOOL_RUNNERS = {
-    "get_rfqs": lambda args: [r.model_dump() for r in sld_service.get_rfqs(**args)],
-    "get_underlyings_of_product": lambda args: sld_service.get_underlyings_of_product(**args).model_dump(),
-    "get_fees_of_product": lambda args: sld_service.get_fees_of_product(**args).model_dump(),
+    "get_rfqs": lambda args: _serialize_tool_output(sld_service.get_rfqs(**args)),
+    "get_underlyings_of_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_of_product(**args)),
+    "get_fees_of_product": lambda args: _serialize_tool_output(sld_service.get_fees_of_product(**args)),
 }
 
 

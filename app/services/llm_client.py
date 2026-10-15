@@ -524,7 +524,19 @@ class MockLLMClient(BaseLLMClient):
         if "get_rfqs" in executed_tools:
             rfq_data = executed_tools["get_rfqs"]
             if isinstance(rfq_data, list) and len(rfq_data) > 0:
-                first_rfq = rfq_data[0]
+                matching_rfq = None
+                if "swiss" in lower or "chf" in lower or "open" in lower:
+                    for r in rfq_data:
+                        gen = r.get("productGeneral") or r
+                        curr = gen.get("currency")
+                        st = r.get("_status") or gen.get("status") or "open"
+                        if ("chf" in lower or "swiss" in lower) and curr != "CHF":
+                            continue
+                        if "open" in lower and st != "open":
+                            continue
+                        matching_rfq = r
+                        break
+                first_rfq = matching_rfq or rfq_data[0]
                 gen = first_rfq.get("productGeneral") or first_rfq
                 product_id = gen.get("productUuid") or gen.get("productId") or first_rfq.get("product_id") or first_rfq.get("rfq_id")
 

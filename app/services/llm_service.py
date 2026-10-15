@@ -117,10 +117,37 @@ def _serialize_tool_output(obj: Any) -> Any:
     return obj
 
 
+def _run_get_rfqs(args: dict[str, Any]) -> Any:
+    start_date = args.get("start_date")
+    end_date = args.get("end_date")
+    isin = args.get("isin")
+    valor = args.get("valor")
+    if not isin and not valor and "rfq_id" in args:
+        val = str(args["rfq_id"]).strip()
+        if val.upper().startswith("CH") and len(val) == 12:
+            isin = val
+        else:
+            resolved = sld_service._resolve_key(val)
+            if resolved and resolved in sld_service._products_by_id:
+                isin = sld_service._products_by_id[resolved].isin
+                valor = sld_service._products_by_id[resolved].valor
+
+    return _serialize_tool_output(
+        sld_service.get_rfqs(
+            start_date=start_date,
+            end_date=end_date,
+            isin=isin,
+            valor=valor,
+        )
+    )
+
+
 TOOL_RUNNERS = {
-    "get_rfqs": lambda args: _serialize_tool_output(sld_service.get_rfqs(**args)),
-    "get_underlyings_of_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_of_product(**args)),
-    "get_fees_of_product": lambda args: _serialize_tool_output(sld_service.get_fees_of_product(**args)),
+    "get_rfqs": _run_get_rfqs,
+    "get_underlyings_for_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_for_product(product_id=args.get("product_id"))),
+    "get_underlyings_of_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_for_product(product_id=args.get("product_id"))),
+    "get_fees_for_product": lambda args: _serialize_tool_output(sld_service.get_fees_for_product(product_id=args.get("product_id"))),
+    "get_fees_of_product": lambda args: _serialize_tool_output(sld_service.get_fees_for_product(product_id=args.get("product_id"))),
 }
 
 

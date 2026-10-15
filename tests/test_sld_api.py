@@ -14,31 +14,32 @@ def test_api_sld_rfqs():
     res = client.get("/api/sld/rfqs")
     assert res.status_code == 200
     data = res.json()
-    assert len(data) == 10  # default page limit
+    assert len(data) == 100
     assert "productGeneral" in data[0]
     assert "productPricing" in data[0]
     assert "productFees" in data[0]
 
-    # Query with larger limit to get all 100
-    res_all = client.get("/api/sld/rfqs?limit=100")
-    assert res_all.status_code == 200
-    assert len(res_all.json()) == 100
-
     # Test /products endpoint alias
-    res_prods = client.get("/api/sld/products?limit=5")
+    res_prods = client.get("/api/sld/products")
     assert res_prods.status_code == 200
-    assert len(res_prods.json()) == 5
+    assert len(res_prods.json()) == 100
 
-    # Filter status
-    res = client.get("/api/sld/rfqs?status=open")
+    # Filter isin
+    res = client.get("/api/sld/rfqs?isin=CH1261564201")
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+    assert res.json()[0]["productGeneral"]["isin"] == "CH1261564201"
+
+    # Filter valor
+    res = client.get("/api/sld/rfqs?valor=126156101")
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+    assert res.json()[0]["productGeneral"]["valor"] == "126156101"
+
+    # Filter date range
+    res = client.get("/api/sld/rfqs?start_date=2026-09-28&end_date=2026-09-29")
     assert res.status_code == 200
     assert len(res.json()) > 0
-
-    # Filter currency
-    res = client.get("/api/sld/rfqs?currency=CHF")
-    assert res.status_code == 200
-    assert len(res.json()) > 0
-    assert all(r["productGeneral"]["currency"] == "CHF" for r in res.json())
 
 
 def test_api_sld_underlyings():

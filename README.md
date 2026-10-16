@@ -94,9 +94,10 @@ curl http://127.0.0.1:8000/api/chat/modes
 
 ## Integrated SLD Tools & REST Endpoints
 
-1. **`get_rfqs(start_date, end_date, isin, valor)`**
+1. **`get_rfqs(start_date, end_date, isin, valor, currency, status, issuer, product_type, underlying, rfq_id, limit, offset)`**
    - REST: `GET /api/sld/rfqs` (alias: `GET /api/sld/products`)
-   - Takes only optional search period bounds (`start_date`, `end_date`) and security identifiers (`isin`, `valor`).
+   - Supports search period bounds (`start_date`, `end_date`), security identifiers (`isin`, `valor`, `rfq_id`), and subset filters (`currency`, `status`, `issuer`, `product_type`, `underlying`) with pagination (`limit`, `offset`).
+   - LLM Tool Calling: returns a bounded, compact summary representation by default (`limit=10`, `compact=True`) with envelope metadata (`total_count`, `returned_count`, `has_more`) to keep the LLM context window bounded.
 2. **`get_underlyings_for_product(product_id)`**
    - REST: `GET /api/sld/products/{product_id}/underlyings` (or `GET /api/sld/underlyings?product_id=...`)
    - Takes `product_id` (mandatory). Returns underlying basket constituents. Supports Product ID, Valor, ISIN, or RFQ ID.

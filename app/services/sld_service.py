@@ -243,14 +243,32 @@ class SLDService:
         end_date: str | date | datetime | None = None,
         isin: str | None = None,
         valor: str | int | None = None,
+        currency: str | None = None,
+        status: str | None = None,
+        issuer: str | None = None,
+        product_type: str | None = None,
+        underlying: str | None = None,
+        rfq_id: str | int | None = None,
+        client: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Product]:
-        """Fetch structured products / RFQs from SLD matching search period or security identifiers.
+        """Fetch structured products / RFQs from SLD matching search period, identifiers, or subset filters.
 
         Inputs (all optional):
             start_date: Start date of search period.
             end_date: End date for search period.
             isin: Security identifier of the product which was quoted.
             valor: Security identifier of the product which was quoted.
+            currency: Currency code filter (e.g. CHF, USD, EUR).
+            status: Lifecycle status (e.g. open, quoted, traded, expired, rejected).
+            issuer: Issuer bank filter (e.g. ZKB, UBS, Vontobel, BNP Paribas).
+            product_type: Product structure filter (e.g. Barrier Reverse Convertible).
+            underlying: Underlying Bloomberg ticker symbol or keyword filter (e.g. NESN, AAPL).
+            rfq_id: RFQ identifier or product ID (e.g. RFQ-101, PRD-101).
+            client: Client name filter.
+            limit: Maximum number of products to return (pagination).
+            offset: Number of products to skip (pagination).
 
         Returns a list of Product dataclasses.
         """
@@ -288,7 +306,83 @@ class SLDService:
                 or clean_valor == str(r["_product"].productGeneral.valor or "").strip().upper()
             ]
 
-        return [r["_product"] for r in filtered_records]
+        if rfq_id is not None:
+            clean_rfq = str(rfq_id).strip().upper()
+            filtered_records = [
+                r for r in filtered_records
+                if clean_rfq == str(r.get("rfq_id") or "").strip().upper()
+                or clean_rfq == str(r.get("product_id") or "").strip().upper()
+                or clean_rfq == str(self._extract_int_id(r.get("product_id")))
+                or clean_rfq == (r.get("isin") or "").strip().upper()
+                or clean_rfq == str(r.get("valor") or "").strip().upper()
+            ]
+
+        if status is not None:
+            clean_status = str(status).strip().lower()
+            filtered_records = [
+                r for r in filtered_records
+                if clean_status == (r.get("status") or "").strip().lower()
+                or clean_status == (r["_product"].status or "").strip().lower()
+            ]
+
+        if currency is not None:
+            clean_curr = str(currency).strip().upper()
+            filtered_records = [
+                r for r in filtered_records
+                if clean_curr == (r.get("currency") or "").strip().upper()
+                or clean_curr == (r["_product"].currency or "").strip().upper()
+            ]
+
+        if issuer is not None:
+            clean_issuer = str(issuer).strip().lower()
+            matching = []
+            for r in filtered_records:
+                if r.get("traded_with") and clean_issuer in str(r["traded_with"]).lower():
+                    matching.append(r)
+                    continue
+                quotes = r["_product"].quotes or (json.loads(r.get("quotes", "[]")) if r.get("quotes") else [])
+                quote_issuers = [str(q.get("issuer", "")).lower() for q in quotes if isinstance(q, dict)]
+                if any(clean_issuer in qi for qi in quote_issuers):
+                    matching.append(r)
+            filtered_records = matching
+
+        if product_type is not None:
+            clean_pt = str(product_type).strip().lower()
+            filtered_records = [
+                r for r in filtered_records
+                if clean_pt in (r.get("product_type") or "").strip().lower()
+                or clean_pt in (r["_product"].productGeneral.productType or "").strip().lower()
+            ]
+
+        if underlying is not None:
+            clean_und = str(underlying).strip().upper()
+            matching = []
+            for r in filtered_records:
+                tickers = [
+                    (u.underlyingBloombergTicker or "").upper()
+                    for u in (r["_product"].productGeneral.underlyingList or [])
+                ]
+                raw_und = str(r.get("underlying_tickers") or "").upper()
+                if any(clean_und in t for t in tickers) or clean_und in raw_und:
+                    matching.append(r)
+            filtered_records = matching
+
+        if client is not None:
+            clean_client = str(client).strip().lower()
+            filtered_records = [
+                r for r in filtered_records
+                if clean_client in (r.get("client") or "").strip().lower()
+                or clean_client in (r["_product"].productGeneral.partyIdentifierClient or "").strip().lower()
+            ]
+
+        offset_val = max(0, offset) if offset else 0
+        if limit is not None:
+            limit_val = max(1, limit)
+            paginated = filtered_records[offset_val : offset_val + limit_val]
+        else:
+            paginated = filtered_records[offset_val:]
+
+        return [r["_product"] for r in paginated]
 
     get_products = get_rfqs
     get_rfq = get_rfqs

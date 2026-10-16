@@ -41,6 +41,18 @@ def test_api_sld_rfqs():
     assert res.status_code == 200
     assert len(res.json()) > 0
 
+    # Filter currency, status, and limit pagination
+    res_filtered = client.get("/api/sld/rfqs?currency=USD&status=open&limit=3")
+    assert res_filtered.status_code == 200
+    items = res_filtered.json()
+    assert len(items) == 3
+    assert all(r["productGeneral"]["currency"] == "USD" for r in items)
+
+    # Filter underlying
+    res_und = client.get("/api/sld/rfqs?underlying=NESN&limit=5")
+    assert res_und.status_code == 200
+    assert len(res_und.json()) > 0
+
 
 def test_api_sld_underlyings():
     res = client.get("/api/sld/products/PRD-101/underlyings")

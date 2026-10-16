@@ -117,3 +117,66 @@ def test_chat_date_based_search():
     assert call["parameters"].get("end_date") == "2026-09-29"
     assert "Product #" in data["reply"] or "PRD-" in data["reply"]
 
+
+def test_chat_subset_with_limit():
+    res = client.post(
+        "/api/chat",
+        json={"message": "Show me the top 3 open RFQs in USD"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["tool_calls"]) == 1
+    call = data["tool_calls"][0]
+    assert call["tool"] == "get_rfqs"
+    assert call["parameters"].get("status") == "open"
+    assert call["parameters"].get("currency") == "USD"
+    assert call["parameters"].get("limit") == 3
+    assert "102" in data["reply"] or "PRD-102" in data["reply"]
+
+
+def test_chat_subset_with_underlying():
+    res = client.post(
+        "/api/chat",
+        json={"message": "Show me RFQs with underlying NESN"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["tool_calls"]) == 1
+    call = data["tool_calls"][0]
+    assert call["tool"] == "get_rfqs"
+    assert call["parameters"].get("underlying") == "NESN"
+    assert "NESN" in data["reply"]
+
+
+def test_run_get_rfqs_compact_and_envelope():
+    import json
+    from app.services.llm_service import _run_get_rfqs, _serialize_tool_output
+    from app.services.sld_service import sld_service
+
+    # Full serialization size for all 100 products
+    all_full = _serialize_tool_output(sld_service.get_rfqs())
+    full_json_str = json.dumps(all_full)
+
+    # Context-bounded compact call (default limit 10, compact=True)
+    bounded_result = _run_get_rfqs({})
+    bounded_json_str = json.dumps(bounded_result)
+
+    assert bounded_result["total_count"] == 100
+    assert bounded_result["returned_count"] == 10
+    assert bounded_result["limit"] == 10
+    assert bounded_result["has_more"] is True
+    assert len(bounded_result["products"]) == 10
+
+    # Verify significant token/character savings for LLM context
+    assert len(bounded_json_str) < len(full_json_str) * 0.25
+
+    # Verify subset filtering through _run_get_rfqs
+    usd_open = _run_get_rfqs({"currency": "USD", "status": "open", "limit": 2})
+    assert usd_open["returned_count"] == 2
+    assert usd_open["total_count"] == 10
+    assert usd_open["limit"] == 2
+    assert usd_open["has_more"] is True
+    for prod in usd_open["products"]:
+        assert prod["currency"] == "USD"
+        assert prod["status"] == "open"
+

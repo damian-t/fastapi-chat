@@ -469,6 +469,10 @@ class MockLLMClient(BaseLLMClient):
         is_asking_underlyings = bool(
             re.search(r"\b(underlying|underlyings|basket|shares|stocks|components|barrier|strike|spot)\b", lower)
         )
+        is_searching_by_underlying = bool(
+            re.search(r"\b(rfqs?|products?|quotes?)\s+(?:with|on|for|having|containing)\s+(?:underlying|ticker|stock)\b", lower)
+            or re.search(r"\bwith\s+underlying\b", lower)
+        )
         is_asking_fees = bool(
             re.search(r"\b(fee|fees|cost|costs|pricing|margin|ter|structuring fee|distribution fee)\b", lower)
         )
@@ -479,6 +483,7 @@ class MockLLMClient(BaseLLMClient):
                 r"\b(rfq|rfqs|quote|quotes|request for quote|requests for quotes|trades|orders|pipeline|lifecycle)\b",
                 text_without_rfq_ids,
             )
+            or is_searching_by_underlying
             or any(s in lower for s in ["open", "quoted", "traded", "expired", "rejected"])
             or any(c in user_message.upper() for c in ["CHF", "USD", "EUR"])
             or any(d in lower for d in ["date", "period", "between", "since", "from", "after", "before", "until", "search period", "quoted on"])
@@ -491,11 +496,11 @@ class MockLLMClient(BaseLLMClient):
         rfq_match = re.search(r"\b(RFQ[-_ ]?\d+)\b", user_message, re.IGNORECASE)
         has_direct_id = bool(rfq_match or re.search(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b", user_message, re.IGNORECASE) or re.search(r"\b(PRD[-_ ]?\d+)\b", user_message, re.IGNORECASE))
 
-        if not has_direct_id and (is_asking_fees or is_asking_underlyings) and any(kw in lower for kw in ["open", "traded", "quoted", "swiss", "usd", "chf"]):
+        if not has_direct_id and (is_asking_fees or (is_asking_underlyings and not is_searching_by_underlying)) and any(kw in lower for kw in ["open", "traded", "quoted", "swiss", "usd", "chf"]):
             # Multi-step: must find the RFQ first
             needed.append("get_rfqs")
 
-        if is_asking_underlyings:
+        if is_asking_underlyings and not is_searching_by_underlying:
             needed.append("get_underlyings_of_product")
         if is_asking_fees:
             needed.append("get_fees_of_product")
@@ -525,10 +530,17 @@ class MockLLMClient(BaseLLMClient):
         # 1. From executed RFQ tool results (multi-step dependency!)
         if "get_rfqs" in executed_tools:
             rfq_data = executed_tools["get_rfqs"]
-            if isinstance(rfq_data, list) and len(rfq_data) > 0:
+            if isinstance(rfq_data, dict):
+                rfq_items = rfq_data.get("products") or rfq_data.get("items") or []
+            elif isinstance(rfq_data, list):
+                rfq_items = rfq_data
+            else:
+                rfq_items = []
+
+            if len(rfq_items) > 0:
                 matching_rfq = None
                 if "swiss" in lower or "chf" in lower or "open" in lower:
-                    for r in rfq_data:
+                    for r in rfq_items:
                         gen = r.get("productGeneral") or r
                         curr = gen.get("currency")
                         st = r.get("_status") or gen.get("status") or "open"
@@ -538,7 +550,7 @@ class MockLLMClient(BaseLLMClient):
                             continue
                         matching_rfq = r
                         break
-                first_rfq = matching_rfq or rfq_data[0]
+                first_rfq = matching_rfq or rfq_items[0]
                 gen = first_rfq.get("productGeneral") or first_rfq
                 product_id = gen.get("productUuid") or gen.get("productId") or first_rfq.get("product_id") or first_rfq.get("rfq_id")
 
@@ -616,6 +628,20 @@ class MockLLMClient(BaseLLMClient):
             valor_match = re.search(r"\bvalor[:\s]*(\d+)\b", user_message, re.IGNORECASE)
             if valor_match:
                 rfq_args["valor"] = valor_match.group(1)
+
+            limit_match = re.search(r"\b(?:top|first|limit)\s+(\d+)\b", user_message, re.IGNORECASE)
+            if limit_match:
+                rfq_args["limit"] = int(limit_match.group(1))
+
+            for und in ["NESN", "NOVN", "ROG", "AAPL", "MSFT", "NVDA", "ABBN", "SIKA", "GEBN", "UBSG"]:
+                if re.search(rf"\b{und}\b", user_message, re.IGNORECASE):
+                    rfq_args["underlying"] = und
+                    break
+
+            for pt in ["Barrier Reverse Convertible", "BRC", "Autocallable", "Reverse Convertible", "Capital Protection"]:
+                if pt.lower() in lower:
+                    rfq_args["product_type"] = pt
+                    break
 
             planned.append(
                 LLMToolCall(
@@ -735,12 +761,26 @@ class MockLLMClient(BaseLLMClient):
 
         # 3. RFQs / Products
         if "get_rfqs" in executed_tools:
-            rfqs = executed_tools["get_rfqs"]
+            rfqs_raw = executed_tools["get_rfqs"]
+            if isinstance(rfqs_raw, dict):
+                rfqs = rfqs_raw.get("products") or rfqs_raw.get("items") or []
+                total_count = rfqs_raw.get("total_count", len(rfqs))
+            elif isinstance(rfqs_raw, list):
+                rfqs = rfqs_raw
+                total_count = len(rfqs)
+            else:
+                rfqs = []
+                total_count = 0
+
             if isinstance(rfqs, list):
                 if not rfqs:
                     sections.append("🔍 No products found matching the requested criteria.")
                 else:
-                    lines = [f"📋 **SLD Product Results** ({len(rfqs)} found):", ""]
+                    if total_count > len(rfqs):
+                        header = f"📋 **SLD Product Results** (showing {len(rfqs)} of {total_count} found):"
+                    else:
+                        header = f"📋 **SLD Product Results** ({len(rfqs)} found):"
+                    lines = [header, ""]
                     for r in rfqs:
                         gen = r.get("productGeneral") or r
                         pricing = r.get("productPricing") or {}

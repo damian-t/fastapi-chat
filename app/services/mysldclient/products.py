@@ -87,6 +87,10 @@ class Product:
         return self.productGeneral.isin or ""
 
     @property
+    def valor(self) -> str:
+        return self.productGeneral.valor or ""
+
+    @property
     def product_name(self) -> str:
         return self.productGeneral.productName or ""
 

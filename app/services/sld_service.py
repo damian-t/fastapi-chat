@@ -1,6 +1,7 @@
 import csv
 import json
 import re
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,35 @@ from app.models.sld import (
 )
 
 DEFAULT_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "rfq_products.csv"
+
+
+def _parse_search_date(val: str | date | datetime | None, is_end: bool = False) -> datetime | None:
+    """Parse string/date/datetime into timezone-aware datetime for range queries."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, date):
+        if is_end:
+            return datetime(val.year, val.month, val.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        return datetime(val.year, val.month, val.day, 0, 0, 0, tzinfo=timezone.utc)
+
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    if len(val_str) == 10 and "T" not in val_str and " " not in val_str:
+        try:
+            d = date.fromisoformat(val_str)
+            if is_end:
+                return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
+            return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    try:
+        dt = datetime.fromisoformat(val_str)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 class SLDService:
@@ -57,6 +87,10 @@ class SLDService:
                 product_id_str = row["product_id"]
                 int_id = self._extract_int_id(product_id_str)
                 isin = row["isin"]
+                valor = row.get("valor")
+                if not valor:
+                    valor = str(126156000 + int_id) if int_id else None
+
                 product_name = row["product_name"]
                 product_type = row["product_type"]
                 currency = row["currency"]
@@ -68,7 +102,10 @@ class SLDService:
                 self._id_mappings[str(int_id)] = product_id_str
                 self._id_mappings[product_id_str.upper()] = product_id_str
                 self._id_mappings[rfq_id.upper()] = product_id_str
-                self._id_mappings[isin.upper()] = product_id_str
+                if isin:
+                    self._id_mappings[isin.upper()] = product_id_str
+                if valor:
+                    self._id_mappings[str(valor).upper()] = product_id_str
 
                 # Parse underlyings
                 underlyings_raw = json.loads(row["underlyings"]) if row.get("underlyings") else []
@@ -155,7 +192,7 @@ class SLDService:
                     finalValuationCutOffTime="17:00",
                     finalValuationCutOffLocation="Zurich",
                     productName=product_name,
-                    valor=None,
+                    valor=str(valor) if valor else None,
                     isin=isin,
                 )
 
@@ -176,6 +213,8 @@ class SLDService:
                 self._products_by_id[product_id_str] = product
 
                 raw_record = dict(row)
+                raw_record["valor"] = str(valor) if valor else None
+                raw_record["_created_dt"] = _parse_search_date(row.get("created_at"))
                 raw_record["_product"] = product
                 self._raw_records.append(raw_record)
 
@@ -200,108 +239,99 @@ class SLDService:
 
     def get_rfqs(
         self,
-        rfq_id: str | int | None = None,
-        status: str | None = None,
-        issuer: str | None = None,
-        product_type: str | None = None,
-        currency: str | None = None,
-        client: str | None = None,
-        limit: int = 10,
-        offset: int = 0,
+        start_date: str | date | datetime | None = None,
+        end_date: str | date | datetime | None = None,
+        isin: str | None = None,
+        valor: str | int | None = None,
     ) -> list[Product]:
-        """Fetch products matching specified filter criteria.
+        """Fetch structured products / RFQs from SLD matching search period or security identifiers.
+
+        Inputs (all optional):
+            start_date: Start date of search period.
+            end_date: End date for search period.
+            isin: Security identifier of the product which was quoted.
+            valor: Security identifier of the product which was quoted.
 
         Returns a list of Product dataclasses.
         """
         filtered_records = self._raw_records
 
-        if rfq_id is not None:
-            clean = str(rfq_id).strip().upper()
+        if start_date is not None:
+            start_dt = _parse_search_date(start_date, is_end=False)
+            if start_dt is not None:
+                filtered_records = [
+                    r for r in filtered_records
+                    if r.get("_created_dt") is not None and r["_created_dt"] >= start_dt
+                ]
+
+        if end_date is not None:
+            end_dt = _parse_search_date(end_date, is_end=True)
+            if end_dt is not None:
+                filtered_records = [
+                    r for r in filtered_records
+                    if r.get("_created_dt") is not None and r["_created_dt"] <= end_dt
+                ]
+
+        if isin is not None:
+            clean_isin = str(isin).strip().upper()
             filtered_records = [
                 r for r in filtered_records
-                if clean in r["rfq_id"].upper()
-                or clean in r.get("isin", "").upper()
-                or clean in r.get("product_id", "").upper()
-                or clean in str(self._extract_int_id(r.get("product_id")))
+                if clean_isin == (r.get("isin") or "").strip().upper()
+                or clean_isin == (r["_product"].productGeneral.isin or "").strip().upper()
             ]
 
-        if status:
-            stat_clean = status.strip().lower()
+        if valor is not None:
+            clean_valor = str(valor).strip().upper()
             filtered_records = [
-                r for r in filtered_records if r.get("status", "").lower() == stat_clean
+                r for r in filtered_records
+                if clean_valor == str(r.get("valor") or "").strip().upper()
+                or clean_valor == str(r["_product"].productGeneral.valor or "").strip().upper()
             ]
 
-        if currency:
-            curr_clean = currency.strip().upper()
-            filtered_records = [
-                r for r in filtered_records if r.get("currency", "").upper() == curr_clean
-            ]
-
-        if product_type:
-            pt_clean = product_type.strip().lower()
-            filtered_records = [
-                r for r in filtered_records if pt_clean in r.get("product_type", "").lower()
-            ]
-
-        if client:
-            client_clean = client.strip().lower()
-            filtered_records = [
-                r for r in filtered_records if client_clean in r.get("client", "").lower()
-            ]
-
-        if issuer:
-            iss_clean = issuer.strip().lower()
-            filtered = []
-            for r in filtered_records:
-                if r.get("traded_with") and iss_clean in r["traded_with"].lower():
-                    filtered.append(r)
-                    continue
-                quotes = json.loads(r.get("quotes", "[]")) if r.get("quotes") else []
-                quote_issuers = [q.get("issuer", "").lower() for q in quotes]
-                if any(iss_clean in qi for qi in quote_issuers):
-                    filtered.append(r)
-            filtered_records = filtered
-
-        paginated = filtered_records[offset : offset + limit] if limit else filtered_records[offset:]
-        return [r["_product"] for r in paginated]
+        return [r["_product"] for r in filtered_records]
 
     get_products = get_rfqs
     get_rfq = get_rfqs
 
-    def get_underlyings_of_product(self, product_id: str | int) -> list[Underlying]:
-        """Fetch underlying Bloomberg tickers for a specific product.
+    def get_underlyings_for_product(self, product_id: str | int) -> list[Underlying]:
+        """Fetch underlying Bloomberg tickers for a specific structured product.
+
+        Parameters:
+            product_id: Mandatory product identifier (product ID, valor, ISIN, or RFQ ID).
 
         Returns a list of Underlying dataclasses.
         """
+        if product_id is None or (isinstance(product_id, str) and not product_id.strip()):
+            raise ValueError("product_id is mandatory.")
+
         key = self._resolve_key(product_id)
         if not key or key not in self._underlyings_by_product_id:
             raise ValueError(f"Product '{product_id}' not found in SLD database.")
+
         return list(self._underlyings_by_product_id[key])
 
-    get_underlying_of_product = get_underlyings_of_product
-    get_underlyings_for_product = get_underlyings_of_product
-    get_underlyings_ofproducts = get_underlyings_of_product
+    get_underlying_of_product = get_underlyings_for_product
+    get_underlyings_of_product = get_underlyings_for_product
+    get_underlyings_ofproducts = get_underlyings_for_product
 
-    def get_fees_of_product(
-        self, product_id: str | int, fee_type: str | None = None
-    ) -> list[Fee]:
+    def get_fees_for_product(self, product_id: str | int) -> list[Fee]:
         """Fetch fee schedule for a specific structured product.
+
+        Parameters:
+            product_id: Mandatory product identifier (product ID, valor, ISIN, or RFQ ID).
 
         Returns a list of Fee dataclasses.
         """
+        if product_id is None or (isinstance(product_id, str) and not product_id.strip()):
+            raise ValueError("product_id is mandatory.")
+
         key = self._resolve_key(product_id)
         if not key or key not in self._fees_by_product_id:
             raise ValueError(f"Product '{product_id}' not found in SLD database.")
 
-        fees = self._fees_by_product_id[key]
-        if fee_type:
-            ft_clean = fee_type.strip().lower()
-            if ft_clean != "all":
-                fees = [f for f in fees if ft_clean in f.feeType.lower() or ft_clean in f.name.lower()]
+        return list(self._fees_by_product_id[key])
 
-        return list(fees)
-
-    get_fees_for_product = get_fees_of_product
+    get_fees_of_product = get_fees_for_product
 
 
 sld_service = SLDService()

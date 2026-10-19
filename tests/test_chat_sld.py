@@ -254,4 +254,24 @@ def test_decimal_serialization_in_tool_calls_and_models():
     assert "20.5" in dumped
 
 
+def test_chat_map_reduce_rfqs():
+    res = client.post(
+        "/api/chat",
+        json={"message": "Can you do a map-reduce summary of all open RFQs in USD?"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["tool_calls"]) == 1
+    call = data["tool_calls"][0]
+    assert call["tool"] == "map_reduce_rfqs"
+    assert call["parameters"].get("status") == "open"
+    assert call["parameters"].get("currency") == "USD"
+    assert call["parameters"].get("batch_size") == 500
+    assert "Server-Side Batch Map-Reduce Summary" in data["reply"]
+    assert "Total Records Processed:" in data["reply"]
+    assert "USD" in data["reply"]
+    assert "token_usage" in data
+
+
+
 

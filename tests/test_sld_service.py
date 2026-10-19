@@ -255,3 +255,90 @@ def test_get_fees_for_product_alias():
 def test_get_fees_for_product_not_found():
     with pytest.raises(ValueError, match="not found"):
         sld_service.get_fees_for_product("UNKNOWN-999")
+
+
+def test_batch_map_reduce_default_batch_size_500():
+    result = sld_service.batch_map_reduce_rfqs()
+    assert result["batch_size"] == 500
+    assert result["total_records_processed"] == 100
+    assert result["batches_processed"] == 1
+    assert result["total_nominal_volume"] > 0
+    assert "CHF" in result["volumes_by_currency"]
+    assert "USD" in result["volumes_by_currency"]
+    assert "EUR" in result["volumes_by_currency"]
+    assert "open" in result["status_distribution"]
+    assert result["average_fair_value_pct"] is not None
+    assert result["average_entry_costs_pct"] is not None
+    assert len(result["top_products_by_volume"]) > 0
+
+
+def test_batch_map_reduce_chunking_consistency():
+    # Run with default batch_size=500
+    res_500 = sld_service.batch_map_reduce_rfqs(batch_size=500)
+
+    # Run with small batch_size=15 to force multiple page traversals (100 items -> 7 pages)
+    res_15 = sld_service.batch_map_reduce_rfqs(batch_size=15)
+
+    assert res_15["batch_size"] == 15
+    assert res_15["batches_processed"] == 7
+    assert res_15["total_records_processed"] == res_500["total_records_processed"]
+    assert res_15["total_nominal_volume"] == res_500["total_nominal_volume"]
+    assert res_15["volumes_by_currency"] == res_500["volumes_by_currency"]
+    assert res_15["status_distribution"] == res_500["status_distribution"]
+    assert res_15["average_fair_value_pct"] == res_500["average_fair_value_pct"]
+    assert res_15["average_entry_costs_pct"] == res_500["average_entry_costs_pct"]
+
+
+def test_batch_map_reduce_filters():
+    res_filtered = sld_service.batch_map_reduce_rfqs(
+        filter_params={"status": "open", "currency": "USD"},
+        batch_size=500,
+    )
+    assert res_filtered["total_records_processed"] == 10
+    assert set(res_filtered["volumes_by_currency"].keys()) == {"USD"}
+    assert res_filtered["status_distribution"] == {"open": 10}
+
+
+def test_batch_map_reduce_10k_dataset_simulation():
+    """Simulate a large dataset of 10,000 RFQs traversed page-by-page with batch_size=500."""
+    from unittest.mock import patch
+
+    # Mock get_rfqs to simulate 10,000 products (20 pages of 500)
+    orig_prods = sld_service.get_rfqs()
+    ten_thousand_prods = [orig_prods[i % len(orig_prods)] for i in range(10000)]
+
+    def mock_paginated_get_rfqs(limit=None, offset=0, **kwargs):
+        if limit is None:
+            return ten_thousand_prods[offset:]
+        return ten_thousand_prods[offset : offset + limit]
+
+    with patch.object(sld_service, "get_rfqs", side_effect=mock_paginated_get_rfqs):
+        res = sld_service.batch_map_reduce_rfqs(batch_size=500)
+        assert res["batch_size"] == 500
+        assert res["batches_processed"] == 20  # Exactly 10,000 / 500 = 20 pages
+        assert res["total_records_processed"] == 10000
+        assert res["total_nominal_volume"] > 0
+        assert res["average_fair_value_pct"] is not None
+
+
+def test_batch_map_reduce_custom_mapper_reducer():
+    def custom_mapper(batch):
+        return {
+            "batch_count": len(batch),
+            "custom_open_count": sum(1 for p in batch if (getattr(p, "_status", None) or getattr(p, "status", None)) == "open"),
+        }
+
+    def custom_reducer(accum, batch):
+        accum["batch_count"] += batch["batch_count"]
+        accum["custom_open_count"] += batch["custom_open_count"]
+        return accum
+
+    res = sld_service.batch_map_reduce_rfqs(
+        batch_size=20,
+        mapper=custom_mapper,
+        reducer=custom_reducer,
+    )
+    assert res["batch_size"] == 20
+    assert res["batches_processed"] == 5
+    assert res["total_records_processed"] == 100
+

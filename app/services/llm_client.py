@@ -639,6 +639,15 @@ class MockLLMClient(BaseLLMClient):
         lower = user_message.lower()
         needed = []
 
+        is_asking_map_reduce = bool(
+            re.search(
+                r"\b(map[- ]?reduce|batch[- ]?map[- ]?reduce|aggregate|aggregation|summarize all|summary of all|total volume (?:of|across|for)|breakdown across all|statistics across all)\b",
+                lower,
+            )
+        )
+        if is_asking_map_reduce:
+            return ["map_reduce_rfqs"]
+
         is_asking_underlyings = bool(
             re.search(r"\b(underlying|underlyings|basket|shares|stocks|components|barrier|strike|spot)\b", lower)
         )
@@ -763,6 +772,30 @@ class MockLLMClient(BaseLLMClient):
 
         planned: list[LLMToolCall] = []
 
+        # Server-side batch map-reduce takes precedence when large/aggregated population analysis is requested
+        if "map_reduce_rfqs" in remaining_tools and "map_reduce_rfqs" in available_tool_names:
+            mr_args: dict[str, Any] = {"batch_size": 500, "operation": "summary"}
+            for s in ["open", "quoted", "traded", "expired", "rejected"]:
+                if s in lower:
+                    mr_args["status"] = s
+                    break
+            for c in ["CHF", "USD", "EUR", "GBP", "JPY"]:
+                if c in user_message.upper():
+                    mr_args["currency"] = c
+                    break
+            for iss in ["ZKB", "UBS", "Vontobel", "BNP Paribas"]:
+                if iss.lower() in lower:
+                    mr_args["issuer"] = iss
+                    break
+            date_matches = re.findall(r"\b(\d{4}-\d{2}-\d{2})\b", user_message)
+            if len(date_matches) >= 2:
+                mr_args["start_date"] = date_matches[0]
+                mr_args["end_date"] = date_matches[1]
+            elif len(date_matches) == 1:
+                mr_args["start_date"] = date_matches[0]
+            planned.append(LLMToolCall(id="call_mr_1", name="map_reduce_rfqs", arguments=mr_args))
+            return planned
+
         # If get_rfqs is required and not yet executed, execute it first
         if "get_rfqs" in remaining_tools and "get_rfqs" in available_tool_names:
             rfq_args: dict[str, Any] = {}
@@ -868,6 +901,62 @@ class MockLLMClient(BaseLLMClient):
             )
 
         sections: list[str] = []
+
+        # 0. Map-Reduce Population Summary
+        if "map_reduce_rfqs" in executed_tools or "batch_map_reduce_rfqs" in executed_tools or "aggregate_rfqs" in executed_tools:
+            mr_data = (
+                executed_tools.get("map_reduce_rfqs")
+                or executed_tools.get("batch_map_reduce_rfqs")
+                or executed_tools.get("aggregate_rfqs")
+            )
+            if isinstance(mr_data, dict):
+                lines = [
+                    f"⚡ **Server-Side Batch Map-Reduce Summary** (Batch Page Size: {mr_data.get('batch_size', 500)}):",
+                    f"• **Total Records Processed:** {mr_data.get('total_records_processed', 0):,} across {mr_data.get('batches_processed', 0)} page batches",
+                    f"• **Total Nominal Volume:** {mr_data.get('total_nominal_volume', 0.0):,.2f}",
+                    "",
+                    "📊 **Volumes by Currency:**",
+                ]
+                vol_curr = mr_data.get("volumes_by_currency", {})
+                cnt_curr = mr_data.get("counts_by_currency", {})
+                for c, v in vol_curr.items():
+                    c_count = cnt_curr.get(c, 0)
+                    lines.append(f"• **{c}:** {c} {v:,.2f} ({c_count:,} products)")
+
+                lines.append("")
+                lines.append("📈 **Status Distribution:**")
+                st_dist = mr_data.get("status_distribution", {})
+                st_strs = [f"`{k}`: {v:,}" for k, v in st_dist.items()]
+                lines.append("• " + (" | ".join(st_strs) if st_strs else "None"))
+
+                lines.append("")
+                lines.append("🏛️ **Volume & Quotes by Issuer:**")
+                iss_vols = mr_data.get("volumes_by_issuer", {})
+                iss_cnts = mr_data.get("counts_by_issuer", {})
+                for iss, v in iss_vols.items():
+                    i_cnt = iss_cnts.get(iss, 0)
+                    lines.append(f"• **{iss}:** {v:,.2f} ({i_cnt} quotes)")
+
+                lines.append("")
+                lines.append("💰 **Pricing & Fee Metrics:**")
+                afv = mr_data.get("average_fair_value_pct")
+                if afv is not None:
+                    fv_range = mr_data.get("fair_value_range", {})
+                    lines.append(f"• **Average Fair Value:** {afv:.2f}% (Range: {fv_range.get('min')}% – {fv_range.get('max')}%)")
+                aec = mr_data.get("average_entry_costs_pct")
+                if aec is not None:
+                    ec_range = mr_data.get("entry_costs_range", {})
+                    lines.append(f"• **Average Entry Costs:** {aec:.2f}% (Range: {ec_range.get('min')}% – {ec_range.get('max')}%)")
+
+                top_prods = mr_data.get("top_products_by_volume", [])
+                if top_prods:
+                    lines.append("")
+                    lines.append("🏆 **Top Products by Volume:**")
+                    for tp in top_prods:
+                        rfq_id_str = f"`{tp.get('rfq_id')}`" if tp.get("rfq_id") else "`Product`"
+                        lines.append(f"• {rfq_id_str} ({tp.get('name')}) — **{tp.get('currency')} {tp.get('nominal', 0):,.2f}** [{tp.get('status')}]")
+
+                sections.append("\n".join(lines).strip())
 
         # 1. Underlyings
         if "get_underlyings_of_product" in executed_tools:

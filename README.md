@@ -104,6 +104,12 @@ curl http://127.0.0.1:8000/api/chat/modes
 3. **`get_fees_for_product(product_id)`**
    - REST: `GET /api/sld/products/{product_id}/fees` (or `GET /api/sld/fees?product_id=...`)
    - Takes `product_id` (mandatory). Returns structured product fee schedules (distribution, structuring, management, exchange fees). Supports Product ID, Valor, ISIN, or RFQ ID.
+4. **`map_reduce_rfqs(start_date, end_date, status, currency, issuer, product_type, underlying, batch_size, operation)`**
+   - REST: `GET /api/sld/rfqs/map-reduce` and `POST /api/sld/rfqs/map-reduce`
+   - Server-side batch map-reduce engine designed for analyzing large datasets (up to 10k+ records).
+   - Iterates through products in pages of **500 records** (`batch_size=500` by default) entirely in server memory.
+   - Maps each batch to compute intermediate distributions and statistics, then reduces into a consolidated population summary (total volume, status distributions, volumes by currency and issuer, average fair value, fee ranges, and top volume products).
+   - Returns a compact JSON summary to the LLM to prevent context window explosion and avoid dozens of slow agent turns.
 
 ---
 

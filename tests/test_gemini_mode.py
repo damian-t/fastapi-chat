@@ -24,6 +24,10 @@ def test_modes_endpoint():
     mode_ids = [m["id"] for m in data["available_modes"]]
     assert "mock" in mode_ids
     assert "gemini" in mode_ids
+    for m in data["available_modes"]:
+        assert "context_window" in m
+        assert m["context_window"] > 0
+        assert "context_window_label" in m
 
 
 def test_chat_explicit_mock_mode():

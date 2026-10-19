@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatMessage(BaseModel):
@@ -16,11 +17,34 @@ class ToolCallRecord(BaseModel):
     result: Any | None = None
     error: str | None = None
 
+    @field_validator("result", "parameters", mode="before")
+    @classmethod
+    def _sanitize_decimals(cls, v: Any) -> Any:
+        def _clean(val: Any) -> Any:
+            if isinstance(val, Decimal):
+                return float(val)
+            if isinstance(val, list):
+                return [_clean(x) for x in val]
+            if isinstance(val, dict):
+                return {k: _clean(sub_v) for k, sub_v in val.items()}
+            return val
+        return _clean(v)
+
+
+class TokenUsage(BaseModel):
+    prompt_tokens: int = Field(default=0, description="Tokens used by prompt context (system + history + message + tools)")
+    completion_tokens: int = Field(default=0, description="Tokens generated in the completion")
+    total_tokens: int = Field(default=0, description="Total tokens used in the current context window")
+    context_window_limit: int = Field(default=128000, description="Total context window token capacity for the model")
+    context_window_used_pct: float = Field(default=0.0, description="Percentage of context window capacity utilized")
+    cumulative_total_tokens: int | None = Field(default=None, description="Sum of total tokens across all iterations for this prompt")
+
 
 class IterationStep(BaseModel):
     iteration: int
     thought: str | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    token_usage: TokenUsage | None = Field(default=None, description="Token usage for this iteration")
 
 
 class ChatRequest(BaseModel):
@@ -38,4 +62,5 @@ class ChatResponse(BaseModel):
     model: str = Field(..., examples=["sld-assistant-dummy-v1", "gemini-3.8-flash"])
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     iterations: list[IterationStep] = Field(default_factory=list)
+    token_usage: TokenUsage | None = Field(default=None, description="Context window token usage details")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -18,13 +18,31 @@ def get_rfqs(
     end_date: str | None = Query(None, description="End date for search period"),
     isin: str | None = Query(None, description="ISIN of the quoted product"),
     valor: str | None = Query(None, description="Valor of the quoted product"),
+    currency: str | None = Query(None, description="Filter by currency (e.g. CHF, USD, EUR)"),
+    status: Literal["open", "quoted", "traded", "expired", "rejected"] | None = Query(None, description="Status filter"),
+    issuer: str | None = Query(None, description="Filter by quoting issuer"),
+    product_type: str | None = Query(None, description="Filter by structured product type"),
+    underlying: str | None = Query(None, description="Filter by underlying ticker"),
+    rfq_id: str | None = Query(None, description="Filter by RFQ or product ID"),
+    client: str | None = Query(None, description="Filter by client name"),
+    limit: int | None = Query(None, ge=1, le=100, description="Max items to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
 ) -> list[Product]:
-    """Fetch structured products from SLD matching date range, ISIN, or Valor. Returns a list of Product dataclasses."""
+    """Fetch structured products from SLD matching date range, identifiers, or subset filters. Returns a list of Product dataclasses."""
     return sld_service.get_rfqs(
         start_date=start_date,
         end_date=end_date,
         isin=isin,
         valor=valor,
+        currency=currency,
+        status=status,
+        issuer=issuer,
+        product_type=product_type,
+        underlying=underlying,
+        rfq_id=rfq_id,
+        client=client,
+        limit=limit,
+        offset=offset,
     )
 
 

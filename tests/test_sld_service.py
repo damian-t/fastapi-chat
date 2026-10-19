@@ -90,6 +90,61 @@ def test_get_rfqs_combined_filters():
     assert len(rfqs_out) == 0
 
 
+def test_get_rfqs_subset_filters():
+    # Currency
+    chf_rfqs = sld_service.get_rfqs(currency="CHF")
+    assert len(chf_rfqs) > 0
+    assert all(r.currency == "CHF" for r in chf_rfqs)
+
+    usd_rfqs = sld_service.get_rfqs(currency="USD")
+    assert len(usd_rfqs) > 0
+    assert all(r.currency == "USD" for r in usd_rfqs)
+
+    # Status
+    open_rfqs = sld_service.get_rfqs(status="open")
+    assert len(open_rfqs) > 0
+    assert all(r.status == "open" for r in open_rfqs)
+
+    traded_rfqs = sld_service.get_rfqs(status="traded")
+    assert len(traded_rfqs) > 0
+    assert all(r.status == "traded" for r in traded_rfqs)
+
+    # Issuer
+    zkb_rfqs = sld_service.get_rfqs(issuer="ZKB")
+    assert len(zkb_rfqs) > 0
+
+    # Product Type
+    brc_rfqs = sld_service.get_rfqs(product_type="Barrier Reverse Convertible")
+    assert len(brc_rfqs) > 0
+    assert all("barrier reverse convertible" in r.product_type.lower() for r in brc_rfqs)
+
+    # Underlying
+    nesn_rfqs = sld_service.get_rfqs(underlying="NESN")
+    assert len(nesn_rfqs) > 0
+    for r in nesn_rfqs:
+        tickers = [u.underlyingBloombergTicker for u in r.productGeneral.underlyingList]
+        assert any("NESN" in t for t in tickers)
+
+
+def test_get_rfqs_pagination_limit_and_offset():
+    all_rfqs = sld_service.get_rfqs()
+    assert len(all_rfqs) == 100
+
+    page_1 = sld_service.get_rfqs(limit=5, offset=0)
+    assert len(page_1) == 5
+    assert page_1[0].rfq_id == all_rfqs[0].rfq_id
+
+    page_2 = sld_service.get_rfqs(limit=5, offset=5)
+    assert len(page_2) == 5
+    assert page_2[0].rfq_id == all_rfqs[5].rfq_id
+    assert page_1[0].rfq_id != page_2[0].rfq_id
+
+    # Filtered pagination
+    open_usd_page = sld_service.get_rfqs(currency="USD", status="open", limit=3, offset=0)
+    assert len(open_usd_page) == 3
+    assert all(r.currency == "USD" and r.status == "open" for r in open_usd_page)
+
+
 def test_get_underlyings_for_product_success():
     res = sld_service.get_underlyings_for_product("PRD-101")
     assert isinstance(res, list)

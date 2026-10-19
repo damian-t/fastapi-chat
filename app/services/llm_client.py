@@ -1,9 +1,26 @@
 import json
 import re
+from decimal import Decimal
 from typing import Any
 from pydantic import BaseModel, Field
 
 from app.models.chat import TokenUsage
+
+
+def safe_json_dumps(obj: Any, **kwargs: Any) -> str:
+    """JSON dump helper that converts Decimal, model_dump, and dataclasses safely."""
+    def _default(o: Any) -> Any:
+        if isinstance(o, Decimal):
+            return float(o)
+        if hasattr(o, "model_dump"):
+            return o.model_dump()
+        if hasattr(o, "__dataclass_fields__"):
+            from dataclasses import asdict
+            return asdict(o)
+        return str(o)
+    if "default" not in kwargs:
+        kwargs["default"] = _default
+    return json.dumps(obj, **kwargs)
 
 
 class LLMToolCall(BaseModel):
@@ -66,9 +83,9 @@ def estimate_messages_tokens(
             if isinstance(value, str):
                 total += estimate_text_tokens(value)
             elif isinstance(value, (dict, list)):
-                total += estimate_text_tokens(json.dumps(value))
+                total += estimate_text_tokens(safe_json_dumps(value))
     if tools:
-        total += 8 + estimate_text_tokens(json.dumps(tools))
+        total += 8 + estimate_text_tokens(safe_json_dumps(tools))
     return total
 
 
@@ -81,9 +98,9 @@ def estimate_completion_tokens(
     if tool_calls:
         for tc in tool_calls:
             if hasattr(tc, "model_dump"):
-                total += estimate_text_tokens(json.dumps(tc.model_dump()))
+                total += estimate_text_tokens(safe_json_dumps(tc.model_dump()))
             elif isinstance(tc, dict):
-                total += estimate_text_tokens(json.dumps(tc))
+                total += estimate_text_tokens(safe_json_dumps(tc))
             else:
                 total += estimate_text_tokens(str(tc))
     return total
@@ -307,13 +324,14 @@ class GeminiLLMClient(BaseLLMClient):
             "messages": messages,
             "temperature": self.temperature,
         }
+        sanitized_payload = json.loads(safe_json_dumps(payload))
 
         data = None
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    resp = await client.post(endpoint, headers=headers, json=sanitized_payload)
                     if resp.status_code == 200:
                         data = resp.json()
                         break
@@ -413,13 +431,14 @@ class GeminiNativeLLMClient(BaseLLMClient):
         }
         if tools:
             payload["tools"] = tools
+        sanitized_payload = json.loads(safe_json_dumps(payload))
 
         data = None
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    resp = await client.post(endpoint, headers=headers, json=sanitized_payload)
                     if resp.status_code == 200:
                         data = resp.json()
                         break

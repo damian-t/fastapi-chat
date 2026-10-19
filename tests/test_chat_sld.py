@@ -214,3 +214,44 @@ def test_chat_iteration_token_usage():
         assert it_usage["total_tokens"] > 0
 
 
+def test_decimal_serialization_in_tool_calls_and_models():
+    from decimal import Decimal
+    from app.models.chat import ToolCallRecord, ChatResponse
+    from app.services.llm_service import _serialize_tool_output, safe_json_dumps
+
+    # Test recursive serialization of Decimals in dicts and lists
+    nested_data = {
+        "price": Decimal("102.3456"),
+        "nested": [{"fee": Decimal("0.55")}, Decimal("1.23")],
+    }
+    serialized = _serialize_tool_output(nested_data)
+    assert isinstance(serialized["price"], float)
+    assert isinstance(serialized["nested"][0]["fee"], float)
+    assert isinstance(serialized["nested"][1], float)
+
+    # Test safe_json_dumps
+    json_str = safe_json_dumps(nested_data)
+    assert "102.3456" in json_str
+
+    # Test ToolCallRecord auto-sanitization of Decimals
+    record = ToolCallRecord(
+        tool="mock_tool",
+        parameters={"rate": Decimal("3.75")},
+        result={"values": [Decimal("10.0"), Decimal("20.5")]},
+    )
+    assert isinstance(record.parameters["rate"], float)
+    assert isinstance(record.result, dict)
+    assert isinstance(record.result["values"][0], float)
+
+    # Verify Pydantic ChatResponse serialization
+    resp = ChatResponse(
+        reply="Test reply",
+        model="mock-test",
+        tool_calls=[record],
+    )
+    dumped = resp.model_dump_json()
+    assert "3.75" in dumped
+    assert "20.5" in dumped
+
+
+

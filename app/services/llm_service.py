@@ -140,14 +140,31 @@ INSTRUCTIONS:
 """
 
 
+def safe_json_dumps(obj: Any, **kwargs: Any) -> str:
+    """JSON dump helper that converts Decimal, model_dump, and dataclasses safely."""
+    def _default(o: Any) -> Any:
+        if isinstance(o, Decimal):
+            return float(o)
+        if hasattr(o, "model_dump"):
+            return o.model_dump()
+        if hasattr(o, "__dataclass_fields__"):
+            return asdict(o)
+        return str(o)
+    if "default" not in kwargs:
+        kwargs["default"] = _default
+    return json.dumps(obj, **kwargs)
+
+
 def _serialize_tool_output(obj: Any) -> Any:
-    if isinstance(obj, list):
-        return [_serialize_tool_output(x) for x in obj]
-    if hasattr(obj, "__dataclass_fields__"):
-        d = asdict(obj)
-        return json.loads(json.dumps(d, default=float))
     if isinstance(obj, Decimal):
         return float(obj)
+    if isinstance(obj, list):
+        return [_serialize_tool_output(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _serialize_tool_output(v) for k, v in obj.items()}
+    if hasattr(obj, "__dataclass_fields__"):
+        d = asdict(obj)
+        return _serialize_tool_output(d)
     return obj
 
 
@@ -293,7 +310,7 @@ def _run_get_rfqs(args: dict[str, Any]) -> Any:
 
 
 TOOL_RUNNERS = {
-    "get_rfqs": _run_get_rfqs,
+    "get_rfqs": lambda args: _serialize_tool_output(_run_get_rfqs(args)),
     "get_underlyings_for_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_for_product(product_id=args.get("product_id"))),
     "get_underlyings_of_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_for_product(product_id=args.get("product_id"))),
     "get_fees_for_product": lambda args: _serialize_tool_output(sld_service.get_fees_for_product(product_id=args.get("product_id"))),
@@ -424,7 +441,7 @@ class LLMService:
             if is_prompt_only:
                 messages.append({
                     "role": "assistant",
-                    "content": llm_decision.content or json.dumps({"tool_calls": [tc.model_dump() for tc in llm_decision.tool_calls]}),
+                    "content": llm_decision.content or safe_json_dumps({"tool_calls": [tc.model_dump() for tc in llm_decision.tool_calls]}),
                 })
                 
                 tool_results_texts: list[str] = []
@@ -435,7 +452,7 @@ class LLMService:
                         tool_results_texts.append(f"- Tool: {tc.name}\n  Error: Tool not found")
                         record = ToolCallRecord(
                             tool=tc.name,
-                            parameters=tc.arguments,
+                            parameters=_serialize_tool_output(tc.arguments),
                             summary=f"Tool '{tc.name}' not found",
                             error=err_msg,
                         )
@@ -444,15 +461,15 @@ class LLMService:
                         continue
 
                     try:
-                        tool_output = runner(tc.arguments)
+                        tool_output = _serialize_tool_output(runner(tc.arguments))
                         tool_results_texts.append(
                             f"- Tool: {tc.name}\n"
-                            f"  Arguments: {json.dumps(tc.arguments)}\n"
-                            f"  Result: {json.dumps(tool_output)}"
+                            f"  Arguments: {safe_json_dumps(tc.arguments)}\n"
+                            f"  Result: {safe_json_dumps(tool_output)}"
                         )
                         record = ToolCallRecord(
                             tool=tc.name,
-                            parameters=tc.arguments,
+                            parameters=_serialize_tool_output(tc.arguments),
                             summary=f"Executed {tc.name}",
                             result=tool_output,
                         )
@@ -461,12 +478,12 @@ class LLMService:
                     except Exception as exc:
                         tool_results_texts.append(
                             f"- Tool: {tc.name}\n"
-                            f"  Arguments: {json.dumps(tc.arguments)}\n"
+                            f"  Arguments: {safe_json_dumps(tc.arguments)}\n"
                             f"  Error: {str(exc)}"
                         )
                         record = ToolCallRecord(
                             tool=tc.name,
-                            parameters=tc.arguments,
+                            parameters=_serialize_tool_output(tc.arguments),
                             summary=f"Failed: {exc}",
                             error=str(exc),
                         )
@@ -507,7 +524,7 @@ class LLMService:
                                 "type": "function",
                                 "function": {
                                     "name": tc.name,
-                                    "arguments": json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments),
+                                    "arguments": safe_json_dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments),
                                 },
                             }
                             for tc in llm_decision.tool_calls
@@ -523,11 +540,11 @@ class LLMService:
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tc.name,
-                            "content": json.dumps(err_msg),
+                            "content": safe_json_dumps(err_msg),
                         })
                         record = ToolCallRecord(
                             tool=tc.name,
-                            parameters=tc.arguments,
+                            parameters=_serialize_tool_output(tc.arguments),
                             summary=f"Tool '{tc.name}' not found",
                             error=str(err_msg),
                         )
@@ -536,16 +553,16 @@ class LLMService:
                         continue
 
                     try:
-                        tool_output = runner(tc.arguments)
+                        tool_output = _serialize_tool_output(runner(tc.arguments))
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tc.name,
-                            "content": json.dumps(tool_output),
+                            "content": safe_json_dumps(tool_output),
                         })
                         record = ToolCallRecord(
                             tool=tc.name,
-                            parameters=tc.arguments,
+                            parameters=_serialize_tool_output(tc.arguments),
                             summary=f"Executed {tc.name}",
                             result=tool_output,
                         )
@@ -557,11 +574,11 @@ class LLMService:
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tc.name,
-                            "content": json.dumps(err_output),
+                            "content": safe_json_dumps(err_output),
                         })
                         record = ToolCallRecord(
                             tool=tc.name,
-                            parameters=tc.arguments,
+                            parameters=_serialize_tool_output(tc.arguments),
                             summary=f"Failed: {exc}",
                             error=str(exc),
                         )

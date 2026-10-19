@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatMessage(BaseModel):
@@ -15,6 +16,19 @@ class ToolCallRecord(BaseModel):
     summary: str | None = None
     result: Any | None = None
     error: str | None = None
+
+    @field_validator("result", "parameters", mode="before")
+    @classmethod
+    def _sanitize_decimals(cls, v: Any) -> Any:
+        def _clean(val: Any) -> Any:
+            if isinstance(val, Decimal):
+                return float(val)
+            if isinstance(val, list):
+                return [_clean(x) for x in val]
+            if isinstance(val, dict):
+                return {k: _clean(sub_v) for k, sub_v in val.items()}
+            return val
+        return _clean(v)
 
 
 class TokenUsage(BaseModel):

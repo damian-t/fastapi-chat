@@ -180,3 +180,37 @@ def test_run_get_rfqs_compact_and_envelope():
         assert prod["currency"] == "USD"
         assert prod["status"] == "open"
 
+
+def test_chat_token_usage_present_and_accurate():
+    res = client.post("/api/chat", json={"message": "Show open RFQs in USD"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "token_usage" in data
+    usage = data["token_usage"]
+    assert usage is not None
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] > 0
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+    assert usage["context_window_limit"] == 128000
+    assert usage["context_window_used_pct"] > 0
+    assert usage["cumulative_total_tokens"] >= usage["total_tokens"]
+
+
+def test_chat_iteration_token_usage():
+    res = client.post(
+        "/api/chat",
+        json={"message": "Can you check the underlyings and fees for RFQ-104?"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert "iterations" in data
+    assert len(data["iterations"]) > 0
+    for it in data["iterations"]:
+        assert "token_usage" in it
+        it_usage = it["token_usage"]
+        assert it_usage is not None
+        assert it_usage["prompt_tokens"] > 0
+        assert it_usage["completion_tokens"] > 0
+        assert it_usage["total_tokens"] > 0
+
+

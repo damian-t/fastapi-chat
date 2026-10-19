@@ -22,6 +22,8 @@ def get_chat_modes() -> dict[str, Any]:
                 "name": "Mock LLM",
                 "model": "mock-sld-llm-v2",
                 "description": "Simulated multi-turn reasoning agent for structured products",
+                "context_window": 128000,
+                "context_window_label": "128k",
                 "configured": True,
             },
             {
@@ -29,6 +31,8 @@ def get_chat_modes() -> dict[str, Any]:
                 "name": "Gemini 3.8 Flash (Native Tools)",
                 "model": "gemini-3.8-flash",
                 "description": "Google Gemini 3.8 Flash with native API function calling",
+                "context_window": 1048576,
+                "context_window_label": "1M",
                 "configured": has_gemini_key,
             },
             {
@@ -36,6 +40,8 @@ def get_chat_modes() -> dict[str, Any]:
                 "name": "Gemini 3.8 Flash (Prompt-only)",
                 "model": "gemini-3.8-flash",
                 "description": "Google Gemini 3.8 Flash with prompt-only tool reasoning",
+                "context_window": 1048576,
+                "context_window_label": "1M",
                 "configured": has_gemini_key,
             },
         ],
@@ -47,16 +53,18 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     """Process a chat inquiry with the selected LLM mode (mock or gemini)."""
     try:
         service = get_llm_service(payload.mode)
-        reply, tool_calls, iterations = await service.execute_and_interpret(
+        reply, tool_calls, iterations, token_usage = await service.execute_and_interpret(
             message=payload.message,
             history=payload.history,
             return_iterations=True,
+            return_usage=True,
         )
         return ChatResponse(
             reply=reply,
             model=service.model_name,
             tool_calls=tool_calls,
             iterations=iterations,
+            token_usage=token_usage,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

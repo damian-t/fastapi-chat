@@ -17,10 +17,20 @@ class ToolCallRecord(BaseModel):
     error: str | None = None
 
 
+class TokenUsage(BaseModel):
+    prompt_tokens: int = Field(default=0, description="Tokens used by prompt context (system + history + message + tools)")
+    completion_tokens: int = Field(default=0, description="Tokens generated in the completion")
+    total_tokens: int = Field(default=0, description="Total tokens used in the current context window")
+    context_window_limit: int = Field(default=128000, description="Total context window token capacity for the model")
+    context_window_used_pct: float = Field(default=0.0, description="Percentage of context window capacity utilized")
+    cumulative_total_tokens: int | None = Field(default=None, description="Sum of total tokens across all iterations for this prompt")
+
+
 class IterationStep(BaseModel):
     iteration: int
     thought: str | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    token_usage: TokenUsage | None = Field(default=None, description="Token usage for this iteration")
 
 
 class ChatRequest(BaseModel):
@@ -38,4 +48,5 @@ class ChatResponse(BaseModel):
     model: str = Field(..., examples=["sld-assistant-dummy-v1", "gemini-3.8-flash"])
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     iterations: list[IterationStep] = Field(default_factory=list)
+    token_usage: TokenUsage | None = Field(default=None, description="Context window token usage details")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

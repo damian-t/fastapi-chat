@@ -41,7 +41,10 @@
             <h1>IH Trading Data Chatbot</h1>
             <p>Structured Products RFQs, Underlyings & Fee Inquiries backed by <code>POST /api/chat</code></p>
           </div>
-          <span id="modelBadge" class="model-badge">mock-sld-llm-v2</span>
+          <div class="topbar-badges">
+            <span id="contextBadge" class="context-badge" title="Context window usage for current conversation">Context: 0 / 128k (0.0%)</span>
+            <span id="modelBadge" class="model-badge">mock-sld-llm-v2</span>
+          </div>
         </header>
 
         <section id="messages" class="messages" aria-live="polite">
@@ -68,7 +71,13 @@
             ></textarea>
             <button id="sendBtn" class="send-button" type="submit" aria-label="Send message">↑</button>
           </div>
-          <div class="composer-hint">Enter to send · Shift+Enter for a new line</div>
+          <div class="composer-hint">
+            <span>Enter to send · Shift+Enter for a new line</span>
+            <span id="composerTokenCounter" class="composer-token-counter">
+              <span class="token-icon">🪙</span> Prompt: <strong id="composerPromptTokens">0</strong> tokens
+              · Window: <span id="composerEstContext">~0</span> / <span id="composerContextLimit">128k</span> (<span id="composerContextPct">0.0%</span>)
+            </span>
+          </div>
         </form>
       </main>
     </div>

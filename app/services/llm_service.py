@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Any
-from app.models.chat import ChatMessage, ToolCallRecord, IterationStep
+from app.models.chat import ChatMessage, ToolCallRecord, IterationStep, TokenUsage
 from app.services.llm_client import (
     BaseLLMClient,
     MockLLMClient,
@@ -10,6 +10,7 @@ from app.services.llm_client import (
     mock_llm_client,
     gemini_llm_client,
     gemini_native_llm_client,
+    build_token_usage,
 )
 from app.services.sld_service import sld_service
 
@@ -314,6 +315,7 @@ class LLMService:
     def __init__(self, llm_client: BaseLLMClient | None = None, max_iterations: int = 5) -> None:
         self.llm_client = llm_client or mock_llm_client
         self.max_iterations = max_iterations
+        self.last_token_usage: TokenUsage | None = None
 
     @property
     def model_name(self) -> str:
@@ -324,7 +326,8 @@ class LLMService:
         message: str,
         history: list[ChatMessage] | None = None,
         return_iterations: bool = False,
-    ) -> tuple[str, list[ToolCallRecord]] | tuple[str, list[ToolCallRecord], list[IterationStep]]:
+        return_usage: bool = False,
+    ) -> Any:
         is_prompt_only = getattr(self.llm_client, "is_prompt_only", False)
 
         # 1. Prepare initial conversation
@@ -358,6 +361,8 @@ class LLMService:
         records: list[ToolCallRecord] = []
         iteration_steps: list[IterationStep] = []
         iteration = 0
+        cumulative_tokens = 0
+        last_step_usage: TokenUsage | None = None
 
         # Iterative loop: continue until LLM deems results sufficient or max_iterations reached
         while iteration < self.max_iterations:
@@ -366,6 +371,18 @@ class LLMService:
             # Give tool descriptions and current context to the LLM
             tools_spec = None if is_prompt_only else SLD_TOOLS
             llm_decision = await self.llm_client.query(messages=messages, tools=tools_spec)
+
+            step_usage = getattr(llm_decision, "token_usage", None)
+            if not step_usage:
+                step_usage = build_token_usage(
+                    model_name=self.model_name,
+                    messages=messages,
+                    tools=tools_spec,
+                    content=llm_decision.content,
+                    tool_calls=llm_decision.tool_calls,
+                )
+            cumulative_tokens += step_usage.total_tokens
+            last_step_usage = step_usage
 
             # If LLM decides it has sufficient information (no more tool calls), finish!
             if not llm_decision.tool_calls:
@@ -380,6 +397,21 @@ class LLMService:
 
                 if header_blocks and not final_content.startswith("🔧"):
                     final_content = f"{header_blocks[0]}\n---\n\n{final_content}"
+
+                final_usage = TokenUsage(
+                    prompt_tokens=step_usage.prompt_tokens,
+                    completion_tokens=step_usage.completion_tokens,
+                    total_tokens=step_usage.total_tokens,
+                    context_window_limit=step_usage.context_window_limit,
+                    context_window_used_pct=step_usage.context_window_used_pct,
+                    cumulative_total_tokens=cumulative_tokens,
+                )
+                self.last_token_usage = final_usage
+
+                if return_usage:
+                    if return_iterations:
+                        return final_content, records, iteration_steps, final_usage
+                    return final_content, records, final_usage
 
                 if return_iterations:
                     return final_content, records, iteration_steps
@@ -446,6 +478,7 @@ class LLMService:
                         iteration=iteration,
                         thought=thought_text,
                         tool_calls=current_step_tools,
+                        token_usage=step_usage,
                     )
                 )
 
@@ -540,6 +573,7 @@ class LLMService:
                         iteration=iteration,
                         thought=thought_text,
                         tool_calls=current_step_tools,
+                        token_usage=step_usage,
                     )
                 )
 
@@ -556,7 +590,31 @@ class LLMService:
         else:
             fallback_response = await self.llm_client.query(messages=messages, tools=None)
 
+        fallback_usage = getattr(fallback_response, "token_usage", None)
+        if not fallback_usage:
+            fallback_usage = build_token_usage(
+                model_name=self.model_name,
+                messages=messages,
+                tools=None,
+                content=fallback_response.content,
+            )
+        cumulative_tokens += fallback_usage.total_tokens
+        final_usage = TokenUsage(
+            prompt_tokens=fallback_usage.prompt_tokens,
+            completion_tokens=fallback_usage.completion_tokens,
+            total_tokens=fallback_usage.total_tokens,
+            context_window_limit=fallback_usage.context_window_limit,
+            context_window_used_pct=fallback_usage.context_window_used_pct,
+            cumulative_total_tokens=cumulative_tokens,
+        )
+        self.last_token_usage = final_usage
+
         fallback_text = fallback_response.content or "Completed with maximum iterations reached."
+        if return_usage:
+            if return_iterations:
+                return fallback_text, records, iteration_steps, final_usage
+            return fallback_text, records, final_usage
+
         if return_iterations:
             return fallback_text, records, iteration_steps
         return fallback_text, records
@@ -566,8 +624,8 @@ class LLMService:
         message: str,
         history: list[ChatMessage] | None = None,
     ) -> str:
-        reply, _, _ = await self.execute_and_interpret(message=message, history=history)
-        return reply
+        res = await self.execute_and_interpret(message=message, history=history)
+        return res[0]
 
 
 dummy_llm_service = LLMService(llm_client=mock_llm_client)

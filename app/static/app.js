@@ -7,19 +7,96 @@ const newChatBtnEl = document.getElementById("newChatBtn");
 const modeSelectEl = document.getElementById("modeSelect");
 const modelBadgeEl = document.getElementById("modelBadge");
 const footerModelEl = document.getElementById("footerModel");
+const contextBadgeEl = document.getElementById("contextBadge");
+const composerPromptTokensEl = document.getElementById("composerPromptTokens");
+const composerEstContextEl = document.getElementById("composerEstContext");
+const composerContextLimitEl = document.getElementById("composerContextLimit");
+const composerContextPctEl = document.getElementById("composerContextPct");
 
 const chatHistory = [];
 let typingEl = null;
+let activeModes = [];
+let activeModeContextWindow = 128000;
+let activeModeContextWindowLabel = "128k";
+let currentConversationTokens = 0;
+
+function estimateClientTokens(text) {
+  if (!text) return 0;
+  const str = String(text).trim();
+  if (!str) return 0;
+  const matches = str.match(/\w+|[^\w\s]/g);
+  const wordTokens = matches ? matches.length : 0;
+  const charTokens = Math.floor(str.length / 3.8);
+  return Math.max(wordTokens, charTokens, 1);
+}
+
+function updateComposerTokenCounter() {
+  const promptText = inputEl ? inputEl.value : "";
+  const promptTokens = estimateClientTokens(promptText);
+  const currentLimit = activeModeContextWindow || 128000;
+  const currentLimitLabel = activeModeContextWindowLabel || (currentLimit >= 1000000 ? "1M" : `${Math.round(currentLimit / 1000)}k`);
+
+  if (composerContextLimitEl) {
+    composerContextLimitEl.textContent = currentLimitLabel;
+  }
+
+  let estContext = currentConversationTokens + promptTokens;
+  if (currentConversationTokens === 0 && promptTokens > 0) {
+    estContext = promptTokens + 180; // approximate base prompt / system instructions overhead
+  }
+  const pct = currentLimit > 0 ? ((estContext / currentLimit) * 100) : 0;
+  const pctStr = pct < 0.01 && pct > 0 ? "<0.01%" : `${pct.toFixed(2)}%`;
+
+  if (composerPromptTokensEl) composerPromptTokensEl.textContent = promptTokens.toLocaleString();
+  if (composerEstContextEl) composerEstContextEl.textContent = `~${estContext.toLocaleString()}`;
+  if (composerContextPctEl) composerContextPctEl.textContent = pctStr;
+}
+
+function updateContextBadge(tokenUsage) {
+  if (!contextBadgeEl) return;
+  if (!tokenUsage) {
+    const limit = activeModeContextWindow || 128000;
+    const limitLabel = activeModeContextWindowLabel || (limit >= 1000000 ? "1M" : `${Math.round(limit / 1000)}k`);
+    contextBadgeEl.textContent = `Context: 0 / ${limitLabel} (0.0%)`;
+    contextBadgeEl.title = `Context window: 0 tokens used out of ${limit.toLocaleString()}`;
+    return;
+  }
+  const total = tokenUsage.total_tokens || 0;
+  const limit = tokenUsage.context_window_limit || activeModeContextWindow || 128000;
+  const pct = typeof tokenUsage.context_window_used_pct === "number"
+    ? tokenUsage.context_window_used_pct
+    : ((total / limit) * 100);
+  const formattedPct = pct < 0.01 && pct > 0 ? "<0.01%" : `${pct.toFixed(2)}%`;
+  const limitLabel = limit >= 1000000 ? "1M" : `${Math.round(limit / 1000)}k`;
+  contextBadgeEl.textContent = `Context: ${total.toLocaleString()} / ${limitLabel} (${formattedPct})`;
+  contextBadgeEl.title = `Context window: ${total.toLocaleString()} tokens used out of ${limit.toLocaleString()} (${formattedPct})`;
+}
+
+function syncActiveModeLimits(modeId) {
+  const mode = activeModes.find((m) => m.id === modeId);
+  if (mode) {
+    activeModeContextWindow = mode.context_window || 128000;
+    activeModeContextWindowLabel = mode.context_window_label || (activeModeContextWindow >= 1000000 ? "1M" : "128k");
+  } else {
+    const isGem = (modeId || "").startsWith("gemini");
+    activeModeContextWindow = isGem ? 1048576 : 128000;
+    activeModeContextWindowLabel = isGem ? "1M" : "128k";
+  }
+  updateContextBadge(null);
+  updateComposerTokenCounter();
+}
 
 async function loadModes() {
   try {
     const res = await fetch("/api/chat/modes");
     if (res.ok) {
       const data = await res.json();
+      activeModes = data.available_modes || [];
       if (data.default_mode && modeSelectEl) {
         modeSelectEl.value = data.default_mode;
         const isGem = data.default_mode.startsWith("gemini");
         updateModelLabels(isGem ? "gemini-3.8-flash" : "mock-sld-llm-v2");
+        syncActiveModeLimits(data.default_mode);
       }
     }
   } catch (err) {
@@ -36,6 +113,7 @@ if (modeSelectEl) {
   modeSelectEl.addEventListener("change", () => {
     const isGem = modeSelectEl.value.startsWith("gemini");
     updateModelLabels(isGem ? "gemini-3.8-flash" : "mock-sld-llm-v2");
+    syncActiveModeLimits(modeSelectEl.value);
   });
 }
 
@@ -212,7 +290,61 @@ function hideEmptyState() {
   }
 }
 
-function addMessage(role, content, extraClass = "", iterations = null, toolCalls = null) {
+function renderContextWindowCard(tokenUsage) {
+  const card = document.createElement("div");
+  card.className = "context-window-card";
+
+  const pTokens = tokenUsage.prompt_tokens || 0;
+  const cTokens = tokenUsage.completion_tokens || 0;
+  const tTokens = tokenUsage.total_tokens || (pTokens + cTokens);
+  const limit = tokenUsage.context_window_limit || activeModeContextWindow || 128000;
+  const pct = typeof tokenUsage.context_window_used_pct === "number"
+    ? tokenUsage.context_window_used_pct
+    : ((tTokens / limit) * 100);
+  const formattedPct = pct < 0.01 && pct > 0 ? "<0.01%" : `${pct.toFixed(2)}%`;
+  const formattedLimit = limit >= 1000000 ? `${(limit / 1000000).toFixed(limit % 1000000 === 0 ? 0 : 1)}M` : `${Math.round(limit / 1000)}k`;
+
+  const topRow = document.createElement("div");
+  topRow.className = "cwc-top";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "cwc-title";
+  titleWrap.innerHTML = `
+    <span class="cwc-icon" aria-hidden="true">🪙</span>
+    <span class="cwc-label">Context Window:</span>
+    <span class="cwc-value"><strong>${tTokens.toLocaleString()}</strong> / ${limit.toLocaleString()} tokens (${formattedLimit})</span>
+    <span class="cwc-badge">${formattedPct}</span>
+  `;
+
+  const breakdown = document.createElement("div");
+  breakdown.className = "cwc-breakdown";
+  let breakdownHtml = `<span title="Tokens used by system prompt, history, user query & tools">Prompt: <strong>${pTokens.toLocaleString()}</strong></span><span class="cwc-dot">·</span><span title="Tokens generated in response">Output: <strong>${cTokens.toLocaleString()}</strong></span>`;
+  if (tokenUsage.cumulative_total_tokens && tokenUsage.cumulative_total_tokens > tTokens) {
+    breakdownHtml += `<span class="cwc-dot">·</span><span title="Total tokens across all iterations in this turn">Turn total: <strong>${tokenUsage.cumulative_total_tokens.toLocaleString()}</strong></span>`;
+  }
+  breakdown.innerHTML = breakdownHtml;
+
+  topRow.appendChild(titleWrap);
+  topRow.appendChild(breakdown);
+
+  const meterTrack = document.createElement("div");
+  meterTrack.className = "cwc-meter";
+  meterTrack.setAttribute("title", `${formattedPct} of context window used (${tTokens.toLocaleString()} / ${limit.toLocaleString()})`);
+
+  const meterFill = document.createElement("div");
+  meterFill.className = "cwc-fill";
+  const widthPct = Math.min(100, Math.max(0.6, pct));
+  meterFill.style.width = `${widthPct}%`;
+
+  meterTrack.appendChild(meterFill);
+
+  card.appendChild(topRow);
+  card.appendChild(meterTrack);
+
+  return card;
+}
+
+function addMessage(role, content, extraClass = "", iterations = null, toolCalls = null, tokenUsage = null) {
   hideEmptyState();
 
   const row = document.createElement("div");
@@ -244,7 +376,8 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
 
     const summaryLeft = document.createElement("span");
     summaryLeft.className = "trace-summary-left";
-    summaryLeft.innerHTML = `<span>🧠 Agent Reasoning & Tools</span> <span class="trace-badge">${totalSteps} iteration${totalSteps > 1 ? "s" : ""} · ${totalTools} tool call${totalTools !== 1 ? "s" : ""}</span>`;
+    const tokenSummary = tokenUsage ? ` · ${tokenUsage.total_tokens.toLocaleString()} tokens` : "";
+    summaryLeft.innerHTML = `<span>🧠 Agent Reasoning & Tools</span> <span class="trace-badge">${totalSteps} iteration${totalSteps > 1 ? "s" : ""} · ${totalTools} tool call${totalTools !== 1 ? "s" : ""}${tokenSummary}</span>`;
 
     summary.appendChild(summaryLeft);
     details.appendChild(summary);
@@ -259,7 +392,17 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
 
         const iterHeader = document.createElement("div");
         iterHeader.className = "iteration-header";
-        iterHeader.textContent = `Iteration ${step.iteration}`;
+        const iterTitle = document.createElement("span");
+        iterTitle.textContent = `Iteration ${step.iteration}`;
+        iterHeader.appendChild(iterTitle);
+
+        if (step.token_usage) {
+          const iterTokenPill = document.createElement("span");
+          iterTokenPill.className = "iteration-token-pill";
+          iterTokenPill.title = `Prompt: ${step.token_usage.prompt_tokens} · Output: ${step.token_usage.completion_tokens}`;
+          iterTokenPill.textContent = `${step.token_usage.total_tokens.toLocaleString()} tokens`;
+          iterHeader.appendChild(iterTokenPill);
+        }
         iterCard.appendChild(iterHeader);
 
         if (step.thought) {
@@ -362,6 +505,16 @@ function addMessage(role, content, extraClass = "", iterations = null, toolCalls
 
   bubble.appendChild(replyEl);
 
+  if (role === "user") {
+    const estTokens = estimateClientTokens(content);
+    const userPill = document.createElement("div");
+    userPill.className = "user-token-pill";
+    userPill.textContent = `~${estTokens.toLocaleString()} token${estTokens === 1 ? "" : "s"}`;
+    bubble.appendChild(userPill);
+  } else if (role === "assistant" && tokenUsage) {
+    bubble.appendChild(renderContextWindowCard(tokenUsage));
+  }
+
   row.appendChild(avatar);
   row.appendChild(bubble);
   messagesEl.appendChild(row);
@@ -441,11 +594,16 @@ async function sendMessage(text) {
 
     const data = await response.json();
     hideTyping();
-    addMessage("assistant", data.reply, "", data.iterations, data.tool_calls);
+    addMessage("assistant", data.reply, "", data.iterations, data.tool_calls, data.token_usage);
     chatHistory.push({ role: "assistant", content: data.reply });
     if (data.model) {
       updateModelLabels(data.model);
     }
+    if (data.token_usage) {
+      currentConversationTokens = data.token_usage.total_tokens;
+      updateContextBadge(data.token_usage);
+    }
+    updateComposerTokenCounter();
   } catch (error) {
     hideTyping();
     addMessage("assistant", `Error: ${error.message}`, "error");
@@ -461,10 +619,14 @@ formEl.addEventListener("submit", (event) => {
   if (!text) return;
   inputEl.value = "";
   autosizeInput();
+  updateComposerTokenCounter();
   sendMessage(text);
 });
 
-inputEl.addEventListener("input", autosizeInput);
+inputEl.addEventListener("input", () => {
+  autosizeInput();
+  updateComposerTokenCounter();
+});
 
 inputEl.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -475,12 +637,15 @@ inputEl.addEventListener("keydown", (event) => {
 
 newChatBtnEl.addEventListener("click", () => {
   chatHistory.length = 0;
+  currentConversationTokens = 0;
+  updateContextBadge(null);
   messagesEl.innerHTML = "";
   if (emptyStateEl) {
     messagesEl.appendChild(emptyStateEl);
   }
   inputEl.value = "";
   autosizeInput();
+  updateComposerTokenCounter();
   inputEl.focus();
 });
 

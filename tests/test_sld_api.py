@@ -95,3 +95,34 @@ def test_api_sld_not_found():
 
     res_f = client.get("/api/sld/products/NONEXISTENT/fees")
     assert res_f.status_code == 404
+
+
+def test_api_sld_map_reduce_get():
+    res = client.get("/api/sld/rfqs/map-reduce")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["batch_size"] == 500
+    assert data["total_records_processed"] == 100
+    assert data["batches_processed"] == 1
+    assert data["total_nominal_volume"] > 0
+    assert "CHF" in data["volumes_by_currency"]
+    assert "open" in data["status_distribution"]
+
+
+def test_api_sld_map_reduce_post():
+    payload = {
+        "filter_params": {
+            "status": "open",
+            "currency": "USD",
+        },
+        "batch_size": 500,
+        "operation": "summary",
+    }
+    res = client.post("/api/sld/rfqs/map-reduce", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["batch_size"] == 500
+    assert data["total_records_processed"] == 10
+    assert data["volumes_by_currency"].get("USD", 0) > 0
+    assert data["status_distribution"] == {"open": 10}
+

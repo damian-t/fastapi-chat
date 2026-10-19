@@ -1,10 +1,12 @@
-from typing import Literal
+from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models.sld import (
     Product,
     Underlying,
     Fee,
+    MapReduceRequest,
+    MapReduceResponse,
 )
 from app.services.sld_service import sld_service
 
@@ -86,3 +88,44 @@ def get_fees_query(
 ) -> list[Fee]:
     """Alternative query endpoint for product fees."""
     return get_fees_for_product(product_id)
+
+
+@router.get("/rfqs/map-reduce", response_model=MapReduceResponse)
+def map_reduce_rfqs_get(
+    start_date: str | None = Query(None, description="Start date of search period"),
+    end_date: str | None = Query(None, description="End date for search period"),
+    status: str | None = Query(None, description="Product status filter"),
+    currency: str | None = Query(None, description="Currency filter"),
+    issuer: str | None = Query(None, description="Issuer filter"),
+    product_type: str | None = Query(None, description="Product type filter"),
+    underlying: str | None = Query(None, description="Underlying filter"),
+    batch_size: int = Query(500, ge=1, le=5000, description="Server-side batch page size (default: 500)"),
+    operation: str = Query("summary", description="Map-reduce operation"),
+) -> dict[str, Any]:
+    """Execute server-side batch map-reduce over RFQs with a default page size of 500."""
+    filters = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "status": status,
+        "currency": currency,
+        "issuer": issuer,
+        "product_type": product_type,
+        "underlying": underlying,
+    }
+    clean_filters = {k: v for k, v in filters.items() if v is not None}
+    return sld_service.batch_map_reduce_rfqs(
+        filter_params=clean_filters,
+        batch_size=batch_size,
+        operation=operation,
+    )
+
+
+@router.post("/rfqs/map-reduce", response_model=MapReduceResponse)
+def map_reduce_rfqs_post(payload: MapReduceRequest) -> dict[str, Any]:
+    """Execute server-side batch map-reduce over RFQs via JSON body with a default page size of 500."""
+    filters = payload.filter_params.model_dump(exclude_none=True) if payload.filter_params else {}
+    return sld_service.batch_map_reduce_rfqs(
+        filter_params=filters,
+        batch_size=payload.batch_size,
+        operation=payload.operation,
+    )

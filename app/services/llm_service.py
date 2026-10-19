@@ -89,11 +89,32 @@ SLD_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "map_reduce_rfqs",
+            "description": "Execute server-side batch map-reduce over RFQs using page-by-page traversal (default page size: 500). Processes arbitrarily large populations (up to 10k+ records) server-side and returns aggregated metrics (volume sums, counts, distributions by status/currency/issuer, fee averages, fair value range, and highlights) to protect context window size.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {"type": "string", "description": "Optional search start date (YYYY-MM-DD)"},
+                    "end_date": {"type": "string", "description": "Optional search end date (YYYY-MM-DD)"},
+                    "status": {"type": "string", "enum": ["open", "quoted", "traded", "expired", "rejected"], "description": "Optional lifecycle status filter"},
+                    "currency": {"type": "string", "description": "Optional currency code (CHF, USD, EUR)"},
+                    "issuer": {"type": "string", "description": "Optional issuer bank (ZKB, UBS, Vontobel, BNP Paribas)"},
+                    "product_type": {"type": "string", "description": "Optional structure type (e.g. Barrier Reverse Convertible)"},
+                    "underlying": {"type": "string", "description": "Optional underlying ticker symbol (e.g. NESN, AAPL)"},
+                    "batch_size": {"type": "integer", "description": "Batch page size for server-side processing (default: 500)"},
+                    "operation": {"type": "string", "enum": ["summary", "volume_by_issuer", "fee_analysis", "underlying_exposure"], "description": "Analysis operation to perform (default: 'summary')"},
+                },
+            },
+        },
+    },
 ]
 
 GEMINI_PROMPT_CONTEXT = """You are the SLD Structured Products Assistant. You distribute and answer inquiries about structured products, their underlying Bloomberg tickers, and fee schedules in the SLD application.
 
-You have access to 3 tools in your context:
+You have access to 4 tools in your context:
 
 1. get_rfqs(start_date=None, end_date=None, isin=None, valor=None, status=None, currency=None, issuer=None, product_type=None, underlying=None, limit=10, offset=0, compact=True)
    Description: Fetch structured products from SLD. Use date-based bounds, security identifiers, status/currency/issuer/underlying filters, and limit/offset to query subsets and protect context size. Returns bounded results with summary metadata.
@@ -122,6 +143,13 @@ You have access to 3 tools in your context:
    Parameters:
      - product_id: Product ID (e.g. 'PRD-101', '101'), Valor (e.g. '126156101'), ISIN (e.g. 'CH1261564201'), or RFQ ID (e.g. 'RFQ-101') (REQUIRED)
      - fee_type: Optional fee category ('distribution', 'structuring', 'all')
+
+4. map_reduce_rfqs(start_date=None, end_date=None, status=None, currency=None, issuer=None, product_type=None, underlying=None, batch_size=500, operation="summary")
+   Description: Server-side batch map-reduce processor for analyzing large structured product / RFQ populations (up to 10k+ records). Processes records in batches of 500 (default page size: 500) and returns aggregated metrics (volume, counts, distributions by status/currency/issuer, fee averages, fair values, highlights) to protect LLM context limits. Use this whenever the user asks for aggregate statistics, totals across all RFQs, population summaries, or questions about total volumes/breakdowns.
+   Parameters:
+     - start_date, end_date, status, currency, issuer, product_type, underlying (all optional filters)
+     - batch_size: Server-side batch page size (default: 500)
+     - operation: 'summary' (default), 'volume_by_issuer', 'fee_analysis', or 'underlying_exposure'
 
 INSTRUCTIONS:
 - Evaluate the user query. Determine which tools to call and with what parameters. You have date-based search capability via `start_date` and `end_date` on `get_rfqs`, as well as subset filters (`status`, `currency`, `issuer`, `product_type`, `underlying`) and `limit`.
@@ -309,8 +337,28 @@ def _run_get_rfqs(args: dict[str, Any]) -> Any:
     }
 
 
+def _run_map_reduce_rfqs(args: dict[str, Any]) -> Any:
+    batch_size = args.get("batch_size")
+    try:
+        batch_size = int(batch_size) if batch_size is not None else 500
+    except (ValueError, TypeError):
+        batch_size = 500
+    operation = args.get("operation") or "summary"
+    filter_keys = ["start_date", "end_date", "status", "currency", "issuer", "product_type", "underlying", "client"]
+    filters = {k: args[k] for k in filter_keys if args.get(k) is not None}
+    res = sld_service.batch_map_reduce_rfqs(
+        filter_params=filters,
+        batch_size=batch_size,
+        operation=operation,
+    )
+    return _serialize_tool_output(res)
+
+
 TOOL_RUNNERS = {
     "get_rfqs": lambda args: _serialize_tool_output(_run_get_rfqs(args)),
+    "map_reduce_rfqs": _run_map_reduce_rfqs,
+    "batch_map_reduce_rfqs": _run_map_reduce_rfqs,
+    "aggregate_rfqs": _run_map_reduce_rfqs,
     "get_underlyings_for_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_for_product(product_id=args.get("product_id"))),
     "get_underlyings_of_product": lambda args: _serialize_tool_output(sld_service.get_underlyings_for_product(product_id=args.get("product_id"))),
     "get_fees_for_product": lambda args: _serialize_tool_output(sld_service.get_fees_for_product(product_id=args.get("product_id"))),

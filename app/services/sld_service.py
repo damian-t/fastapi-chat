@@ -4,7 +4,7 @@ import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.models.sld import (
     Underlying,
@@ -426,6 +426,287 @@ class SLDService:
         return list(self._fees_by_product_id[key])
 
     get_fees_of_product = get_fees_for_product
+
+    def _default_rfq_mapper(self, batch: list[Product], operation: str = "summary") -> dict[str, Any]:
+        """Map step: aggregate metrics for a batch/page of products."""
+        count = len(batch)
+        status_counts: dict[str, int] = {}
+        currency_volumes: dict[str, float] = {}
+        currency_counts: dict[str, int] = {}
+        issuer_volumes: dict[str, float] = {}
+        issuer_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        underlying_counts: dict[str, int] = {}
+
+        total_nominal = 0.0
+        fair_value_sum = 0.0
+        fair_value_count = 0
+        fair_value_min = float("inf")
+        fair_value_max = float("-inf")
+
+        entry_costs_sum = 0.0
+        entry_costs_count = 0
+        entry_costs_min = float("inf")
+        entry_costs_max = float("-inf")
+
+        top_by_volume: list[dict[str, Any]] = []
+
+        for p in batch:
+            gen = getattr(p, "productGeneral", None) or p
+            pricing = getattr(p, "productPricing", None)
+            fees = getattr(p, "productFees", None)
+
+            status = getattr(p, "_status", None) or getattr(p, "status", "open")
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+            curr = getattr(gen, "currency", None) or getattr(p, "currency", "CHF")
+            nominal = getattr(gen, "productAmount", None) or getattr(p, "nominal", 0.0) or 0.0
+            try:
+                nominal_val = float(nominal)
+            except (ValueError, TypeError):
+                nominal_val = 0.0
+
+            currency_volumes[curr] = currency_volumes.get(curr, 0.0) + nominal_val
+            currency_counts[curr] = currency_counts.get(curr, 0) + 1
+            total_nominal += nominal_val
+
+            ptype = getattr(gen, "productType", None) or getattr(p, "product_type", "Structured Product")
+            type_counts[ptype] = type_counts.get(ptype, 0) + 1
+
+            # Underlyings
+            und_list = getattr(gen, "underlyingList", None) or getattr(p, "underlyings", []) or []
+            for u in und_list:
+                ticker = getattr(u, "underlyingBloombergTicker", None) or (u.get("underlyingBloombergTicker") if isinstance(u, dict) else str(u))
+                if ticker:
+                    underlying_counts[ticker] = underlying_counts.get(ticker, 0) + 1
+
+            # Quotes / Issuers
+            quotes = getattr(p, "_quotes", []) or getattr(p, "quotes", []) or []
+            if quotes:
+                for q in quotes:
+                    iss = q.get("issuer") or q.get("issuer_name") or "Unknown"
+                    issuer_counts[iss] = issuer_counts.get(iss, 0) + 1
+                    issuer_volumes[iss] = issuer_volumes.get(iss, 0.0) + nominal_val
+            else:
+                iss = getattr(p, "issuer", None) or "Quoted Bank"
+                issuer_counts[iss] = issuer_counts.get(iss, 0) + 1
+                issuer_volumes[iss] = issuer_volumes.get(iss, 0.0) + nominal_val
+
+            # Fair value pricing
+            fv = getattr(pricing, "fairValue", None) if pricing else None
+            if fv is not None:
+                try:
+                    fv_flt = float(fv)
+                    fair_value_sum += fv_flt
+                    fair_value_count += 1
+                    if fv_flt < fair_value_min:
+                        fair_value_min = fv_flt
+                    if fv_flt > fair_value_max:
+                        fair_value_max = fv_flt
+                except (ValueError, TypeError):
+                    pass
+
+            # Entry costs
+            ec = getattr(fees, "entryCosts", None) if fees else None
+            if ec is not None:
+                try:
+                    ec_flt = float(ec)
+                    entry_costs_sum += ec_flt
+                    entry_costs_count += 1
+                    if ec_flt < entry_costs_min:
+                        entry_costs_min = ec_flt
+                    if ec_flt > entry_costs_max:
+                        entry_costs_max = ec_flt
+                except (ValueError, TypeError):
+                    pass
+
+            prod_id = getattr(gen, "productId", None) or getattr(p, "product_id", None)
+            rfq_id = getattr(p, "rfq_id", None) or (f"RFQ-{prod_id}" if prod_id else None)
+            isin = getattr(gen, "isin", None) or getattr(p, "isin", None)
+            name = getattr(gen, "productName", None) or getattr(p, "product_name", None)
+            top_by_volume.append({
+                "rfq_id": rfq_id,
+                "product_id": f"PRD-{prod_id}" if prod_id else None,
+                "isin": isin,
+                "name": name,
+                "currency": curr,
+                "nominal": nominal_val,
+                "status": status,
+            })
+
+        top_by_volume.sort(key=lambda x: x["nominal"], reverse=True)
+        top_by_volume = top_by_volume[:5]
+
+        return {
+            "batch_count": count,
+            "total_nominal": round(total_nominal, 2),
+            "status_counts": status_counts,
+            "currency_volumes": {k: round(v, 2) for k, v in currency_volumes.items()},
+            "currency_counts": currency_counts,
+            "issuer_volumes": {k: round(v, 2) for k, v in issuer_volumes.items()},
+            "issuer_counts": issuer_counts,
+            "type_counts": type_counts,
+            "underlying_counts": underlying_counts,
+            "fair_value_stats": {
+                "sum": fair_value_sum,
+                "count": fair_value_count,
+                "min": fair_value_min if fair_value_count > 0 else None,
+                "max": fair_value_max if fair_value_count > 0 else None,
+            },
+            "entry_costs_stats": {
+                "sum": entry_costs_sum,
+                "count": entry_costs_count,
+                "min": entry_costs_min if entry_costs_count > 0 else None,
+                "max": entry_costs_max if entry_costs_count > 0 else None,
+            },
+            "top_by_volume": top_by_volume,
+        }
+
+    def _default_rfq_reducer(self, accum: dict[str, Any], batch: dict[str, Any]) -> dict[str, Any]:
+        """Reduce step: accumulate batch-level metrics into consolidated summary."""
+        accum["batch_count"] += batch["batch_count"]
+        accum["total_nominal"] = round(accum["total_nominal"] + batch["total_nominal"], 2)
+
+        for k, v in batch["status_counts"].items():
+            accum["status_counts"][k] = accum["status_counts"].get(k, 0) + v
+
+        for k, v in batch["currency_volumes"].items():
+            accum["currency_volumes"][k] = round(accum["currency_volumes"].get(k, 0.0) + v, 2)
+
+        for k, v in batch["currency_counts"].items():
+            accum["currency_counts"][k] = accum["currency_counts"].get(k, 0) + v
+
+        for k, v in batch["issuer_volumes"].items():
+            accum["issuer_volumes"][k] = round(accum["issuer_volumes"].get(k, 0.0) + v, 2)
+
+        for k, v in batch["issuer_counts"].items():
+            accum["issuer_counts"][k] = accum["issuer_counts"].get(k, 0) + v
+
+        for k, v in batch["type_counts"].items():
+            accum["type_counts"][k] = accum["type_counts"].get(k, 0) + v
+
+        for k, v in batch["underlying_counts"].items():
+            accum["underlying_counts"][k] = accum["underlying_counts"].get(k, 0) + v
+
+        # Fair value stats
+        b_fv = batch["fair_value_stats"]
+        a_fv = accum["fair_value_stats"]
+        a_fv["sum"] += b_fv["sum"]
+        a_fv["count"] += b_fv["count"]
+        if b_fv["min"] is not None:
+            a_fv["min"] = b_fv["min"] if a_fv["min"] is None else min(a_fv["min"], b_fv["min"])
+        if b_fv["max"] is not None:
+            a_fv["max"] = b_fv["max"] if a_fv["max"] is None else max(a_fv["max"], b_fv["max"])
+
+        # Entry costs stats
+        b_ec = batch["entry_costs_stats"]
+        a_ec = accum["entry_costs_stats"]
+        a_ec["sum"] += b_ec["sum"]
+        a_ec["count"] += b_ec["count"]
+        if b_ec["min"] is not None:
+            a_ec["min"] = b_ec["min"] if a_ec["min"] is None else min(a_ec["min"], b_ec["min"])
+        if b_ec["max"] is not None:
+            a_ec["max"] = b_ec["max"] if a_ec["max"] is None else max(a_ec["max"], b_ec["max"])
+
+        # Merge top by volume
+        merged_top = accum["top_by_volume"] + batch["top_by_volume"]
+        seen = set()
+        deduped = []
+        for item in sorted(merged_top, key=lambda x: x["nominal"], reverse=True):
+            key = item.get("rfq_id") or item.get("isin") or item.get("name")
+            if key not in seen:
+                seen.add(key)
+                deduped.append(item)
+        accum["top_by_volume"] = deduped[:5]
+
+        return accum
+
+    def batch_map_reduce_rfqs(
+        self,
+        filter_params: dict[str, Any] | None = None,
+        batch_size: int = 500,
+        operation: str = "summary",
+        mapper: Callable[[list[Product]], dict[str, Any]] | None = None,
+        reducer: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Execute server-side batch map-reduce over RFQs using page-by-page traversal.
+
+        Default batch page size is 500 records.
+        Processes arbitrary populations (up to 10k+ products) within server memory
+        and returns a bounded, compact summary to protect LLM context windows.
+        """
+        if batch_size <= 0:
+            batch_size = 500
+
+        offset = 0
+        batches_processed = 0
+        total_records = 0
+        accumulated_result: dict[str, Any] | None = None
+
+        while True:
+            batch = self.get_rfqs(
+                limit=batch_size,
+                offset=offset,
+                **(filter_params or {}),
+            )
+            if not batch:
+                break
+
+            batches_processed += 1
+            total_records += len(batch)
+
+            mapped_batch = mapper(batch) if mapper else self._default_rfq_mapper(batch, operation)
+
+            if accumulated_result is None:
+                accumulated_result = mapped_batch
+            else:
+                accumulated_result = reducer(accumulated_result, mapped_batch) if reducer else self._default_rfq_reducer(accumulated_result, mapped_batch)
+
+            if len(batch) < batch_size:
+                break
+
+            offset += batch_size
+
+        if accumulated_result is None:
+            accumulated_result = self._default_rfq_mapper([], operation)
+
+        fv_stats = accumulated_result.get("fair_value_stats", {})
+        avg_fair_value = round(fv_stats["sum"] / fv_stats["count"], 4) if fv_stats.get("count", 0) > 0 else None
+
+        ec_stats = accumulated_result.get("entry_costs_stats", {})
+        avg_entry_costs = round(ec_stats["sum"] / ec_stats["count"], 4) if ec_stats.get("count", 0) > 0 else None
+
+        und_counts = accumulated_result.get("underlying_counts", {})
+        top_underlyings = dict(sorted(und_counts.items(), key=lambda x: x[1], reverse=True)[:10])
+
+        return {
+            "operation": operation,
+            "batch_size": batch_size,
+            "batches_processed": batches_processed,
+            "total_records_processed": total_records,
+            "total_nominal_volume": accumulated_result.get("total_nominal", 0.0),
+            "volumes_by_currency": accumulated_result.get("currency_volumes", {}),
+            "counts_by_currency": accumulated_result.get("currency_counts", {}),
+            "status_distribution": accumulated_result.get("status_counts", {}),
+            "product_type_distribution": accumulated_result.get("type_counts", {}),
+            "volumes_by_issuer": accumulated_result.get("issuer_volumes", {}),
+            "counts_by_issuer": accumulated_result.get("issuer_counts", {}),
+            "top_underlyings": top_underlyings,
+            "average_fair_value_pct": avg_fair_value,
+            "fair_value_range": {
+                "min": fv_stats.get("min"),
+                "max": fv_stats.get("max"),
+            },
+            "average_entry_costs_pct": avg_entry_costs,
+            "entry_costs_range": {
+                "min": ec_stats.get("min"),
+                "max": ec_stats.get("max"),
+            },
+            "top_products_by_volume": accumulated_result.get("top_by_volume", []),
+        }
+
+    map_reduce_rfqs = batch_map_reduce_rfqs
+    aggregate_rfqs = batch_map_reduce_rfqs
 
 
 sld_service = SLDService()
